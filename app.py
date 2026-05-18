@@ -17,7 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.15.0'
+_APP_VERSION = '1.17.0'
 
 CONFIG = {}
 
@@ -2358,9 +2358,16 @@ function loginClose() {
 async function loadLoginProfiles() {
   try {
     const r = await fetch('/api/profiles');
-    _loginProfiles = await r.json();
+    const d = await r.json();
+    _loginProfiles = d.profiles || [];
+    const lastId   = d.last_id  || '';
     renderLoginProfiles();
-    if (_loginProfiles.length && !_loginSelId) loginSelectProfile(_loginProfiles[0]);
+    if (!_loginProfiles.length) {
+      loginNewProfile();                            // no profiles → show blank form directly
+    } else if (!_loginSelId) {
+      const pref = _loginProfiles.find(p => p.id === lastId) || _loginProfiles[0];
+      loginSelectProfile(pref);                     // pre-select last-used (or first)
+    }
   } catch(e) {}
 }
 
@@ -3019,7 +3026,11 @@ async def _handle_unban(req):
 
 
 async def _handle_profiles_get(req):
-    return web.json_response([_profile_for_api(p) for p in _profiles])
+    last_id = CONFIG.get('web', {}).get('last_profile_id', '')
+    return web.json_response({
+        'profiles': [_profile_for_api(p) for p in _profiles],
+        'last_id':  last_id,
+    })
 
 
 async def _handle_profiles_post(req):
@@ -3091,6 +3102,11 @@ async def _handle_connect(req):
     _rcon_cfg = {'host': host, 'port': port, 'password': password}
     _active_profile_id = pid
     _rcon_restart.set()
+    if pid:
+        CONFIG.setdefault('web', {})['last_profile_id'] = pid
+        cfg_path = os.path.join(os.path.dirname(_profiles_path), 'config.json')
+        with open(cfg_path, 'w') as f:
+            json.dump(CONFIG, f, indent=2)
     return web.json_response({'ok': True})
 
 
@@ -3171,9 +3187,10 @@ def main():
         with open(cfg_path, 'w') as f:
             json.dump(CONFIG, f, indent=2)
 
-    # Auto-connect to first profile on startup
+    # Auto-connect to last-used profile on startup
+    last_id = CONFIG.get('web', {}).get('last_profile_id', '')
     if _profiles:
-        p = _profiles[0]
+        p = next((x for x in _profiles if x['id'] == last_id), _profiles[0])
         _active_profile_id = p['id']
         _rcon_cfg = {'host': p['host'], 'port': p['port'], 'password': _decrypt_pwd(p['password'])}
 
