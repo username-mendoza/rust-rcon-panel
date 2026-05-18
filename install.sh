@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Rust RCON Panel — Full Stack Installer v1.11.0
+#  Rust RCON Panel — Full Stack Installer v1.12.0
 #  Installs: SteamCMD · Rust Server · Oxide · Plugins · Panel
 #  Requires: Debian/Ubuntu Linux, root
 # =============================================================================
 set -euo pipefail
 
-VERSION="1.11.0"
+VERSION="1.12.0"
 STEAM_USER="steam"
 STEAM_HOME="/home/steam"
 RUST_DIR="${STEAM_HOME}/rustserver"
@@ -75,6 +75,7 @@ spin_fail() {
 }
 
 die() { spin_fail "$*"; exit 1; }
+ok()   { printf "  ${GRN}✓${R}  %s\n" "$*"; }
 info() { printf "  ${CYN}→${R}  %s\n" "$*"; }
 
 # ── Banner ────────────────────────────────────────────────────────────────────
