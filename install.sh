@@ -114,7 +114,7 @@ _checkboxes() {
   local -n _cb_n="$names_ref" _cb_s="$sel_ref"
   local count=${#_cb_n[@]} cur=0
   local lines=$((count + 5))
-  tput civis 2>/dev/null || true
+  printf '\033[?25l'  # hide cursor (no tput needed)
   _draw_cb "$title" $cur "$names_ref" "$descs_ref" "$sel_ref"
   while true; do
     local key; IFS= read -rsn1 key 2>/dev/null || true
@@ -132,7 +132,7 @@ _checkboxes() {
     printf "\033[%dA" $lines
     _draw_cb "$title" $cur "$names_ref" "$descs_ref" "$sel_ref"
   done
-  tput cnorm 2>/dev/null || true; echo
+  printf '\033[?25h'; echo  # show cursor
 }
 
 # ── Radio TUI ─────────────────────────────────────────────────────────────────
@@ -157,7 +157,7 @@ _radio() {
   local count=${#_r_n[@]}
   local cur="${!result_ref}"
   local lines=$((count + 5))
-  tput civis 2>/dev/null || true
+  printf '\033[?25l'  # hide cursor
   _draw_radio "$title" $cur "$names_ref" "$descs_ref"
   while true; do
     local key; IFS= read -rsn1 key 2>/dev/null || true
@@ -173,7 +173,7 @@ _radio() {
     printf "\033[%dA" $lines
     _draw_radio "$title" $cur "$names_ref" "$descs_ref"
   done
-  tput cnorm 2>/dev/null || true
+  printf '\033[?25h'  # show cursor
   printf -v "$result_ref" '%d' "$cur"; echo
 }
 
@@ -190,13 +190,26 @@ ask() {
   printf -v "$var" '%s' "$val"
 }
 
-gen_pw()   { openssl rand -base64 18 | tr -d '/+=' | head -c 20; }
+gen_pw() {
+  # Use /dev/urandom — no external tools needed
+  tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 20
+}
 gen_seed() { echo $((RANDOM * RANDOM % 2147483647)); }
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
-check_root()   { [[ $EUID -eq 0 ]] || die "Run as root: sudo bash install.sh"; }
-check_os()     { command -v apt-get &>/dev/null || die "Requires Debian/Ubuntu (apt)"; PKG_MGR="apt"; }
-check_python() { python3 --version &>/dev/null || die "python3 not found"; }
+check_root() { [[ $EUID -eq 0 ]] || die "Run as root: sudo bash install.sh"; }
+check_os()   { command -v apt-get &>/dev/null || die "Requires Debian/Ubuntu (apt)"; PKG_MGR="apt"; }
+
+# Bootstrap: install bare minimum so the installer itself can run
+# (curl, python3, openssl needed before the TUI / config steps)
+bootstrap() {
+  printf "  ${DIM}Bootstrapping — updating apt cache...${R}\r"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq 2>/dev/null
+  apt-get install -y -q --no-install-recommends \
+    curl wget ca-certificates python3 openssl 2>/dev/null
+  printf '\033[2K\r'  # clear line
+}
 
 # ── Config gathering ──────────────────────────────────────────────────────────
 gather_config() {
@@ -271,11 +284,29 @@ show_summary() {
 
 # ── System deps ───────────────────────────────────────────────────────────────
 install_system_deps() {
+  export DEBIAN_FRONTEND=noninteractive
   dpkg --add-architecture i386 2>/dev/null || true
   apt-get update -qq 2>/dev/null
-  local pkgs="curl wget unzip tar lib32gcc-s1 libgdiplus python3 python3-aiohttp python3-cryptography openssl"
-  [[ $SSL_MODE -eq 3 ]] && pkgs+=" certbot"
-  apt-get install -y -q $pkgs >/dev/null 2>&1
+  local pkgs=(
+    # Core utilities
+    curl wget ca-certificates unzip tar gzip
+    # Locale / terminal
+    locales
+    # Rust server dependencies (32-bit compat + Mono for MapRenderer)
+    lib32gcc-s1 libgdiplus libc6-i386
+    # Python + panel deps
+    python3 python3-pip python3-aiohttp python3-cryptography
+    # Misc tools used by installer
+    openssl sudo
+  )
+  [[ $SSL_MODE -eq 3 ]] && pkgs+=(certbot)
+  apt-get install -y -q "${pkgs[@]}" 2>/dev/null
+  # Ensure locale is set (needed for Unicode in terminal)
+  locale-gen en_US.UTF-8 2>/dev/null || true
+  update-locale LANG=en_US.UTF-8 2>/dev/null || true
+  # Install aiohttp + cryptography via pip as fallback if apt version is too old
+  python3 -c 'import aiohttp, cryptography' 2>/dev/null \
+    || pip3 install --quiet aiohttp cryptography 2>/dev/null || true
 }
 
 # ── Steam user ────────────────────────────────────────────────────────────────
@@ -613,7 +644,11 @@ PYEOF
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 print_summary() {
-  local ip; ip=$(hostname -I | awk '{print $1}')
+  local ip
+  ip=$(hostname -I 2>/dev/null | awk '{print $1}') \
+    || ip=$(ip -4 addr show scope global 2>/dev/null | awk '/inet/{print $2}' | cut -d/ -f1 | head -1) \
+    || ip="<server-ip>"
+  [[ -z "$ip" ]] && ip="<server-ip>"
   local panel_url
   case $SSL_MODE in
     0) panel_url="http://${ip}:${WEB_PORT}" ;;
@@ -639,7 +674,9 @@ print_summary() {
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
-  check_root; check_os; check_python
+  check_root
+  check_os
+  bootstrap        # silently install curl + python3 + openssl before TUI
   show_banner
 
   # ── Component selection ──
