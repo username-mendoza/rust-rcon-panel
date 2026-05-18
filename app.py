@@ -17,7 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.17.0'
+_APP_VERSION = '1.18.0'
 
 CONFIG = {}
 
@@ -2306,7 +2306,7 @@ function onMsg(e) {
       try {
         const pl = JSON.parse(msgT);
         if (Array.isArray(pl)) {
-          renderPlayers(pl.map(p => ({id: p.SteamID, name: p.Username, ping: p.Ping})));
+          renderPlayers(pl.map(p => ({id: p.SteamID, name: p.DisplayName || p.Username || '', ping: p.Ping})));
           return;
         }
       } catch(e) {}
