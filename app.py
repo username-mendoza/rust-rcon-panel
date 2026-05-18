@@ -17,7 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.18.0'
+_APP_VERSION = '1.19.1'
 
 CONFIG = {}
 
@@ -2574,7 +2574,7 @@ async def _auth(request, handler):
     pwd = CONFIG.get('web', {}).get('password', '')
     if not pwd:
         return await handler(request)
-    if request.path in ('/login', '/favicon.svg', '/mapimg'):
+    if request.path in ('/login', '/favicon.svg', '/mapimg', '/monuments'):
         return await handler(request)
     # CSRF: reject state-changing requests from foreign origins
     if request.method not in ('GET', 'HEAD', 'OPTIONS'):
@@ -2804,19 +2804,26 @@ async def _handle_index(req):
 
 async def _fetch_map_url(url: str):
     global _mapimg_cache, _mapimg_cache_ct
-    try:
-        async with aiohttp.ClientSession() as sess:
-            async with sess.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                if resp.status == 200:
-                    data = await resp.read()
-                    ct = resp.content_type or ''
-                    _mapimg_cache = data
-                    _mapimg_cache_ct = 'image/png' if ('png' in ct or url.lower().endswith('.png')) else 'image/jpeg'
-                    print(f'Map image cached from URL ({len(data)//1024} KB)')
-                else:
-                    print(f'Map image fetch: HTTP {resp.status}')
-    except Exception as e:
-        print(f'Map image fetch failed: {e}')
+    delays = [5, 15, 30, 60, 120, 300]
+    attempt = 0
+    while True:
+        try:
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                    if resp.status == 200:
+                        data = await resp.read()
+                        ct = resp.content_type or ''
+                        _mapimg_cache = data
+                        _mapimg_cache_ct = 'image/png' if ('png' in ct or url.lower().endswith('.png')) else 'image/jpeg'
+                        print(f'Map image cached from URL ({len(data)//1024} KB)', flush=True)
+                        return
+                    else:
+                        print(f'Map image fetch: HTTP {resp.status}, retrying…', flush=True)
+        except Exception as e:
+            print(f'Map image fetch failed: {e}, retrying…', flush=True)
+        delay = delays[min(attempt, len(delays) - 1)]
+        attempt += 1
+        await asyncio.sleep(delay)
 
 
 async def _handle_api_cfg(req):
@@ -2891,13 +2898,40 @@ async def _handle_mapimg(req):
     return web.Response(status=404)
 
 
-async def _handle_monuments(req):
+async def _read_local_monuments() -> str | None:
     path = CONFIG.get('map', {}).get('image_path', '')
     if path:
         mpath = Path(path).resolve().parent / 'monuments.json'
         if mpath.exists():
-            text = await asyncio.to_thread(mpath.read_text)
-            return web.Response(text=text, content_type='application/json')
+            return await asyncio.to_thread(mpath.read_text)
+    return None
+
+
+async def _handle_monuments_public(req):
+    """Public /monuments endpoint — served to remote panels that use this panel as image_url source."""
+    text = await _read_local_monuments()
+    return web.Response(text=text or '[]', content_type='application/json')
+
+
+async def _handle_monuments(req):
+    text = await _read_local_monuments()
+    if text is not None:
+        return web.Response(text=text, content_type='application/json')
+    # No local file — try fetching from the image_url source panel
+    image_url = CONFIG.get('map', {}).get('image_url', '')
+    if image_url:
+        # Derive monuments URL from image URL (replace /mapimg path with /monuments)
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(image_url)
+        mon_url = urlunparse(parsed._replace(path='/monuments', query='', fragment=''))
+        try:
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get(mon_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        body = await resp.text()
+                        return web.Response(text=body, content_type='application/json')
+        except Exception:
+            pass
     return web.Response(text='[]', content_type='application/json')
 
 
@@ -3205,6 +3239,7 @@ def main():
     app.router.add_get('/api/about',              _handle_about)
     app.router.add_get('/api/time',               _handle_time)
     app.router.add_get('/api/monuments',          _handle_monuments)
+    app.router.add_get('/monuments',              _handle_monuments_public)
     app.router.add_get('/api/players',            _handle_players_api)
     app.router.add_get('/mapimg',                 _handle_mapimg)
     app.router.add_get('/api/mapimg/refresh',     _handle_mapimg_refresh)

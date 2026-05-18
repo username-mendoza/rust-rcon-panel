@@ -16,9 +16,12 @@ A self-hosted web management panel for Rust dedicated servers. Single-file Pytho
 - **RCON console** — send commands, see live server output
 - **Chat tab** — monitor and send in-game chat
 - **Interactive map** — canvas-based terrain overlay with monument markers, player positions, tier filters, pan & zoom
+- **Live world info** — seed and world size read live from RCON on connect, rustmaps.com deep-link auto-populated
 - **Players tab** — online players with ping, full session history, playtime tracking
 - **Ban management** — view ban list, unban players with one click
-- **Multi-server profiles** — save multiple RCON connections, switch without restart
+- **Multi-server profiles** — save multiple RCON connections, auto-connects to last-used server on login
+- **Remote panel support** — point a secondary panel at the primary to share map image and monuments over HTTP
+- **About popup** — version, Python, aiohttp info accessible from the UI
 - **HTTPS** — self-signed, custom certificate, or Let's Encrypt
 - **Session auth** — login with panel password; sessions expire after 24 hours
 - **Encrypted storage** — RCON passwords encrypted with Fernet; web password hashed with PBKDF2-HMAC-SHA256 (260k iterations)
@@ -94,6 +97,36 @@ On first start, the panel hashes the plaintext password and replaces it in `conf
 
 ---
 
+## Remote Panel (secondary / read-only view)
+
+You can run a second panel instance — on a different machine or container — that displays the same map without direct filesystem access to the game server. The secondary panel fetches the map image and monument data from the primary panel over HTTP.
+
+**Primary panel** — no config change required. The endpoints `/mapimg` and `/monuments` are public (no auth needed), so the secondary can pull from them freely.
+
+**Secondary panel `config.json`:**
+
+```json
+{
+  "web": {
+    "host": "0.0.0.0",
+    "port": 80,
+    "password": "..."
+  },
+  "map": {
+    "world_size": 4500,
+    "seed": 0,
+    "image_url": "http://<primary-panel-ip>/mapimg",
+    "image_path": ""
+  }
+}
+```
+
+- `image_url` — points to the primary panel's `/mapimg` endpoint. The secondary fetches and caches the PNG at startup, with automatic retry if the primary is temporarily unreachable.
+- Monuments are fetched automatically from `/monuments` on the same host as `image_url`.
+- World seed and size are still read live from RCON if the secondary has RCON configured; otherwise set them in `config.json`.
+
+---
+
 ## HTTPS Configuration
 
 Add an `ssl` block to `config.json`:
@@ -140,6 +173,8 @@ When SSL is active, HTTP on `http_port` automatically redirects to HTTPS.
 
 Profiles are stored encrypted in `profiles.json`. Add and switch servers from the **Connect** overlay inside the panel — no restart required.
 
+On first login with no saved profiles, the panel prompts for server connection details directly. The last-used profile is remembered across restarts.
+
 Each profile stores:
 - Display name
 - Host / IP
@@ -157,14 +192,15 @@ Install the plugin by copying it to your Oxide plugins directory:
 /home/steam/rustserver/oxide/plugins/MapRenderer.cs
 ```
 
-The rendered map is saved to:
+The rendered map and monument data are saved to:
 ```
 /home/steam/rustserver/oxide/data/MapRenderer/map.png
+/home/steam/rustserver/oxide/data/MapRenderer/monuments.json
 ```
 
-This path should match `map.image_path` in `config.json`. The panel serves it at `/mapimg`.
+These paths should match `map.image_path` in `config.json`. The panel serves the image at `/mapimg` and monument data at `/monuments` (both unauthenticated — safe for LAN use; do not expose raw to the public internet without a reverse proxy).
 
-To re-render manually:
+To re-render manually via RCON console:
 ```
 maprender.generate
 ```
@@ -209,11 +245,13 @@ Both services are enabled for autostart on boot.
   "map": {
     "world_size": 3000,
     "seed":       12345678,
-    "image_url":  "",
-    "image_path": "/path/to/map.png"
+    "image_url":  "http://<other-panel>/mapimg",
+    "image_path": "/path/to/MapRenderer/map.png"
   }
 }
 ```
+
+`image_url` and `image_path` can coexist — `image_url` is used for serving `/mapimg` to browsers; `image_path` is read for the local `/monuments` endpoint. Set only `image_url` (and leave `image_path` empty) on a remote panel with no local game server.
 
 `profiles.json` is auto-managed by the panel — do not edit manually.
 
@@ -235,6 +273,10 @@ Both services are enabled for autostart on boot.
 
 /home/steam/rustserver/oxide/plugins/
   MapRenderer.cs  — Oxide plugin for terrain map rendering
+
+/home/steam/rustserver/oxide/data/MapRenderer/
+  map.png         — rendered terrain image (written by MapRenderer.cs)
+  monuments.json  — monument list with coordinates and tiers (written by MapRenderer.cs)
 ```
 
 ---
@@ -246,6 +288,7 @@ Both services are enabled for autostart on boot.
 - Sessions: 32-byte random token, 24-hour expiry, httponly + SameSite=Lax cookie
 - Login: rate-limited to 10 attempts per IP per 10 minutes
 - CSRF: Origin/Referer header checked on all state-changing requests
+- `/mapimg` and `/monuments` are intentionally unauthenticated — put the panel behind a VPN or firewall; do not expose port 80/443 directly to the internet without one
 - Never expose RCON port (default 28016) to the public internet
 
 ---
