@@ -9,6 +9,7 @@ import hmac
 import json
 import os
 import re
+import ssl
 import time
 from html import escape as _he
 from pathlib import Path
@@ -511,14 +512,19 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
   margin-left: 5px; min-width: 16px; text-align: center;
 }
 #pl-banned-wrap { flex: 1; overflow-y: auto; }
-#pl-banned-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+#pl-banned-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
 #pl-banned-table th {
   padding: 7px 10px; text-align: left; color: var(--dim); font-size: 11px;
   font-weight: normal; border-bottom: 1px solid var(--border);
   background: var(--bg2); position: sticky; top: 0;
 }
-#pl-banned-table td { padding: 7px 10px; border-bottom: 1px solid rgba(46,49,56,.5); vertical-align: middle; }
+#pl-banned-table col.col-sid    { width: 155px; }
+#pl-banned-table col.col-name   { width: 22%; }
+#pl-banned-table col.col-reason { }
+#pl-banned-table col.col-act    { width: 72px; }
+#pl-banned-table td { padding: 7px 10px; border-bottom: 1px solid rgba(46,49,56,.5); vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #pl-banned-table tr:hover td { background: rgba(255,255,255,.02); }
+#pl-banned-table td.col-reason { white-space: normal; word-break: break-word; }
 .ban-unban {
   background: none; border: 1px solid var(--border); color: var(--dim);
   font-family: inherit; font-size: 11px; padding: 3px 9px; border-radius: 4px;
@@ -945,8 +951,11 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
       </div>
       <div id="pl-banned-wrap" style="display:none">
         <table id="pl-banned-table">
+          <colgroup>
+            <col class="col-sid"><col class="col-name"><col class="col-reason"><col class="col-act">
+          </colgroup>
           <thead><tr>
-            <th>Steam ID</th><th>Name</th><th>Reason</th><th></th>
+            <th>Steam ID</th><th>Name</th><th>Reason / Notes</th><th></th>
           </tr></thead>
           <tbody id="pl-banned-tbody"></tbody>
         </table>
@@ -2118,7 +2127,7 @@ function renderBannedTab() {
     tr.innerHTML =
       '<td><span class="pl-sid" title="Click to copy" onclick="navigator.clipboard.writeText(\''+b.steamid+'\')" style="cursor:pointer">'+esc(b.steamid)+'</span></td>' +
       '<td class="pl-name">'+(knownName ? esc(knownName) : '<span style="color:var(--dim)">Unknown</span>')+'</td>' +
-      '<td style="color:var(--dim)">'+(b.reason ? esc(b.reason) : '')+'</td>' +
+      '<td class="col-reason" style="color:var(--dim)">'+(b.reason ? esc(b.reason) : '')+'</td>' +
       '<td><button class="ban-unban" onclick="unbanPlayer(\''+b.steamid+'\',this)">Unban</button></td>';
     tbody.appendChild(tr);
   }
@@ -2815,23 +2824,34 @@ async def _handle_bans(req):
             return web.json_response(bans)
     except Exception:
         pass
-    # Plain-text format: one entry per line, e.g. `76561198xxxxxxx "PlayerName"`
+    # Text format — handle variants:
+    #   76561198xxx "Name" "Reason"
+    #   76561198xxx 0 0 "Name" "Notes"      (banlistex with extra fields)
+    #   1. 76561198xxx "Name"               (numbered entries)
+    _re_sid = re.compile(r'\b(\d{17})\b')
     for line in raw.splitlines():
         line = line.strip()
         if not line:
             continue
-        parts = line.split(None, 1)
-        steamid = parts[0]
+        # Strip leading index numbers ("1." "1)" "1:")
+        line = re.sub(r'^\d+[.):\s]+', '', line).strip()
+        m = _re_sid.search(line)
+        if not m:
+            continue
+        steamid = m.group(1)
+        rest = line[m.end():].strip()
+        # Extract all quoted tokens from rest
         name = ''
         reason = ''
-        if len(parts) > 1:
-            rest = parts[1]
-            if rest.startswith('"'):
-                end = rest.find('"', 1)
-                name = rest[1:end] if end > 0 else rest.strip('"')
-                reason = rest[end+1:].strip().strip('"') if end > 0 else ''
-            else:
-                name = rest
+        quoted = re.findall(r'"([^"]*)"', rest)
+        if quoted:
+            name   = quoted[0]
+            reason = quoted[1] if len(quoted) > 1 else ''
+        elif rest:
+            # unquoted remainder — skip leading bare numbers (extra banlistex fields)
+            tokens = rest.split()
+            non_num = [t for t in tokens if not t.isdigit()]
+            name = non_num[0] if non_num else ''
         bans.append({'steamid': steamid, 'name': name, 'reason': reason, 'expiry': ''})
     return web.json_response(bans)
 
@@ -2946,6 +2966,24 @@ async def _cleanup(app):
     await asyncio.gather(app['rcon'], return_exceptions=True)
 
 
+def _build_ssl_ctx(ssl_cfg: dict):
+    mode = (ssl_cfg.get('mode') or 'none').lower()
+    if mode == 'none':
+        return None
+    cert = ssl_cfg.get('cert', '')
+    key  = ssl_cfg.get('key', '')
+    if not cert or not key:
+        print(f'SSL mode "{mode}" configured but cert/key missing — running HTTP')
+        return None
+    for p, label in ((cert, 'cert'), (key, 'key')):
+        if not os.path.exists(p):
+            print(f'SSL {label} not found: {p} — running HTTP')
+            return None
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert, key)
+    return ctx
+
+
 def main():
     global CONFIG, _rcon_q, _player_db_path, _profiles_path, _active_profile_id, _rcon_cfg, _secret_key_path
     cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
@@ -3020,10 +3058,40 @@ def main():
     app.on_startup.append(_startup)
     app.on_cleanup.append(_cleanup)
 
-    host = CONFIG['web'].get('host', '0.0.0.0')
-    port = int(CONFIG['web'].get('port', 8080))
-    print(f'Rust RCON Panel  →  http://{host}:{port}')
-    web.run_app(app, host=host, port=port, access_log=None)
+    host      = CONFIG['web'].get('host', '0.0.0.0')
+    port      = int(CONFIG['web'].get('port', 8080))
+    http_port = int(CONFIG['web'].get('http_port', 80))
+    ssl_cfg   = CONFIG.get('web', {}).get('ssl') or {}
+    ssl_ctx   = _build_ssl_ctx(ssl_cfg)
+
+    if ssl_ctx:
+        async def _http_redir(req):
+            h    = req.headers.get('Host', '').split(':')[0]
+            dest = f'https://{h}' + (f':{port}' if port != 443 else '') + req.path_qs
+            raise web.HTTPMovedPermanently(dest)
+
+        async def _run_https():
+            redir_app = web.Application()
+            redir_app.router.add_route('*', '/{path:.*}', _http_redir)
+            runner       = web.AppRunner(app,       access_log=None)
+            redir_runner = web.AppRunner(redir_app, access_log=None)
+            await runner.setup()
+            await redir_runner.setup()
+            await web.TCPSite(runner,       host, port,      ssl_context=ssl_ctx).start()
+            await web.TCPSite(redir_runner, host, http_port).start()
+            print(f'Rust RCON Panel  →  https://{host}:{port}')
+            print(f'HTTP redirect    →  :{http_port} → https:{port}')
+            print('======== Running on https ========')
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await runner.cleanup()
+                await redir_runner.cleanup()
+
+        asyncio.run(_run_https())
+    else:
+        print(f'Rust RCON Panel  →  http://{host}:{port}')
+        web.run_app(app, host=host, port=port, access_log=None)
 
 
 if __name__ == '__main__':
