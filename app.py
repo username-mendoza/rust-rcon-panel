@@ -2468,7 +2468,7 @@ async def _auth(request, handler):
     pwd = CONFIG.get('web', {}).get('password', '')
     if not pwd:
         return await handler(request)
-    if request.path in ('/login', '/favicon.svg'):
+    if request.path in ('/login', '/favicon.svg', '/mapimg'):
         return await handler(request)
     # CSRF: reject state-changing requests from foreign origins
     if request.method not in ('GET', 'HEAD', 'OPTIONS'):
