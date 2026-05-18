@@ -1,0 +1,13 @@
+# Runtime secrets — never commit
+.secret_key
+config.json
+profiles.json
+players.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Release archives (current install.sh is the source of truth)
+releases/
