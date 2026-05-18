@@ -2727,12 +2727,15 @@ async def _handle_api_worldcfg(req):
     """Query live world seed and size from the connected RCON server."""
     if not _rcon_ok:
         return web.json_response({'error': 'not connected'}, status=503)
+    # ConVar responses come back as: varname: "value"
+    _cv = re.compile(r'"(-?\d+)"')
+    def _parse_cv(raw: str):
+        m = _cv.search(raw)
+        return int(m.group(1)) if m else None
     try:
-        seed_raw = (await _rcon_query('server.worldseed')).strip()
+        seed_raw = (await _rcon_query('server.seed')).strip()
         size_raw = (await _rcon_query('server.worldsize')).strip()
-        seed = int(seed_raw) if seed_raw.lstrip('-').isdigit() else None
-        size = int(size_raw) if size_raw.isdigit() else None
-        return web.json_response({'seed': seed, 'world_size': size})
+        return web.json_response({'seed': _parse_cv(seed_raw), 'world_size': _parse_cv(size_raw)})
     except Exception as e:
         return web.json_response({'error': str(e)}, status=503)
 
