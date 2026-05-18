@@ -1572,6 +1572,17 @@ fetch('/api/cfg').then(r=>r.json()).then(c => {
   drawMap();
 }).catch(()=>{});
 
+function fetchWorldCfg() {
+  fetch('/api/worldcfg').then(r => r.ok ? r.json() : null).then(c => {
+    if (!c || c.error) return;
+    if (c.seed != null)       { MAP_SEED   = c.seed; }
+    if (c.world_size != null) { WORLD_SIZE = c.world_size; }
+    if (MAP_SEED) $('map-rmlink').href = 'https://rustmaps.com/?seed='+MAP_SEED+'&size='+WORLD_SIZE;
+    updateMapInfoBar();
+    drawMap();
+  }).catch(() => {});
+}
+
 function updateMapInfoBar() {
   // Bottom-left infobar on canvas
   const bar = $('map-infobar');
@@ -1659,16 +1670,21 @@ function drawMap() {
   } else {
     ctx.fillStyle = '#0a120a';
     ctx.fillRect(mx0, my0, size, size);
+    ctx.font = '12px Consolas,monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    ctx.textAlign = 'center';
     if (!MAP_IMG_CONFIGURED) {
-      ctx.font = '12px Consolas,monospace';
-      ctx.fillStyle = 'rgba(255,255,255,0.22)';
-      ctx.textAlign = 'center';
       ctx.fillText('No map image — click "rustmaps.com ↗" above to get one', mx0 + size/2, my0 + 26);
       ctx.font = '10px Consolas,monospace';
       ctx.fillStyle = 'rgba(255,255,255,0.12)';
       ctx.fillText('Copy the image URL and set it as map.image_url in config.json', mx0 + size/2, my0 + 42);
-      ctx.textAlign = 'left';
+    } else {
+      ctx.fillText('Waiting for MapRenderer to generate the map…', mx0 + size/2, my0 + 26);
+      ctx.font = '10px Consolas,monospace';
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fillText('Run  maprender.generate  in the console to trigger it now', mx0 + size/2, my0 + 42);
     }
+    ctx.textAlign = 'left';
   }
 
   // Terrain region within the square (excludes ocean border)
@@ -2175,6 +2191,7 @@ function onMsg(e) {
     setTimeout(() => send('status'),        300);
     setTimeout(() => sendBg('serverinfo'),  600);
     setTimeout(() => sendBg('playerlist'),  900);
+    fetchWorldCfg();
   } else if (d.type === 'disconnected') {
     setOk(false);
     log('RCON connection lost -- retrying in 5s...', 'err');
@@ -2186,6 +2203,7 @@ function onMsg(e) {
     } else if (d.connected) {
       hideLoginOverlay();
       setTimeout(()=>send('status'),300); setTimeout(()=>sendBg('serverinfo'),600); setTimeout(()=>sendBg('playerlist'),900);
+      fetchWorldCfg();
     }
   } else if (d.type === 'rcon') {
     const msg  = (d.data && d.data.Message) || '';
@@ -2705,6 +2723,20 @@ async def _handle_api_cfg(req):
     })
 
 
+async def _handle_api_worldcfg(req):
+    """Query live world seed and size from the connected RCON server."""
+    if not _rcon_ok:
+        return web.json_response({'error': 'not connected'}, status=503)
+    try:
+        seed_raw = (await _rcon_query('server.worldseed')).strip()
+        size_raw = (await _rcon_query('server.worldsize')).strip()
+        seed = int(seed_raw) if seed_raw.lstrip('-').isdigit() else None
+        size = int(size_raw) if size_raw.isdigit() else None
+        return web.json_response({'seed': seed, 'world_size': size})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=503)
+
+
 async def _handle_time(req):
     now = datetime.datetime.now().astimezone()
     try:
@@ -3039,6 +3071,7 @@ def main():
     app.router.add_get('/favicon.svg',            _handle_favicon)
     app.router.add_get('/ws',                     _handle_ws)
     app.router.add_get('/api/cfg',                _handle_api_cfg)
+    app.router.add_get('/api/worldcfg',           _handle_api_worldcfg)
     app.router.add_get('/api/time',               _handle_time)
     app.router.add_get('/api/monuments',          _handle_monuments)
     app.router.add_get('/api/players',            _handle_players_api)
