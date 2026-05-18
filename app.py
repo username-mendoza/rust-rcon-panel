@@ -17,6 +17,8 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
+_APP_VERSION = '1.15.0'
+
 CONFIG = {}
 
 # ── Player history database ───────────────────────────────────────────────────
@@ -765,13 +767,66 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 #settings-save-pwd:hover { background: var(--accent2); }
 #settings-msg { font-size: 12px; text-align: center; min-height: 16px; }
 
+/* ── About modal ── */
+#about-overlay {
+  position: fixed; inset: 0; z-index: 2000;
+  background: rgba(0,0,0,.75); backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+}
+#about-overlay.hidden { display: none; }
+#about-card {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+  width: 380px; max-width: calc(100vw - 32px);
+  box-shadow: 0 20px 60px rgba(0,0,0,.7); overflow: hidden;
+}
+#about-hdr {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+}
+#about-hdr-title { font-size: 14px; font-weight: bold; color: var(--text); }
+#about-close {
+  background: none; border: none; color: var(--dim); font-size: 18px;
+  cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: all .15s; line-height: 1;
+}
+#about-close:hover { color: var(--text); background: var(--bg3); }
+#about-body { padding: 20px; display: flex; flex-direction: column; gap: 0; }
+.about-skull {
+  text-align: center; font-size: 32px; margin-bottom: 10px;
+  animation: skull-bob 3s ease-in-out infinite;
+}
+@keyframes skull-bob {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-4px); }
+}
+.about-name {
+  text-align: center; font-size: 15px; font-weight: bold;
+  color: var(--text); margin-bottom: 2px;
+}
+.about-tagline {
+  text-align: center; font-size: 11px; color: var(--dim); margin-bottom: 18px;
+}
+.about-rows { display: flex; flex-direction: column; gap: 8px; }
+.about-row {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px; padding: 7px 10px; border-radius: 6px; background: var(--bg3);
+}
+.about-row-label { color: var(--dim); }
+.about-row-val   { color: var(--text); font-family: monospace; }
+.about-footer {
+  margin-top: 18px; text-align: center;
+}
+.about-footer a {
+  font-size: 11px; color: var(--accent); text-decoration: none;
+}
+.about-footer a:hover { text-decoration: underline; }
+
 /* switch server + logout buttons in header */
-#hdr-switch, #hdr-settings, #hdr-logout {
+#hdr-switch, #hdr-settings, #hdr-about, #hdr-logout {
   background: none; border: 1px solid var(--border); color: var(--dim);
   font-family: inherit; font-size: 11px; padding: 4px 10px; border-radius: 4px;
   cursor: pointer; transition: all .15s; white-space: nowrap; text-decoration: none;
 }
-#hdr-switch:hover { border-color: var(--accent); color: var(--text); }
+#hdr-switch:hover, #hdr-settings:hover, #hdr-about:hover { border-color: var(--accent); color: var(--text); }
 #hdr-logout:hover { border-color: var(--red); color: var(--red); }
 #hdr-logout.hidden { display: none; }
 </style>
@@ -849,11 +904,36 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
   </div>
 </div>
 
+<!-- About modal -->
+<div id="about-overlay" class="hidden">
+  <div id="about-card">
+    <div id="about-hdr">
+      <span id="about-hdr-title">&#9432; About</span>
+      <button id="about-close" onclick="hideAbout()">✕</button>
+    </div>
+    <div id="about-body">
+      <div class="about-skull">☠</div>
+      <div class="about-name">Rust RCON Panel</div>
+      <div class="about-tagline">Self-hosted web management for Rust dedicated servers</div>
+      <div class="about-rows">
+        <div class="about-row"><span class="about-row-label">Panel version</span><span class="about-row-val" id="ab-version">—</span></div>
+        <div class="about-row"><span class="about-row-label">Python</span><span class="about-row-val" id="ab-python">—</span></div>
+        <div class="about-row"><span class="about-row-label">aiohttp</span><span class="about-row-val" id="ab-aiohttp">—</span></div>
+        <div class="about-row"><span class="about-row-label">Platform</span><span class="about-row-val" id="ab-platform">—</span></div>
+      </div>
+      <div class="about-footer">
+        <a id="ab-github" href="https://github.com/username-mendoza/rust-rcon-panel" target="_blank" rel="noopener">&#128279; GitHub</a>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="header">
   <div id="hdr-logo"><svg width="22" height="24" viewBox="0 0 32 36" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:-5px;margin-right:5px"><ellipse cx="16" cy="13" rx="11" ry="11" fill="#4fc3f7"/><circle cx="11.5" cy="12" r="2.8" fill="#1a1c20"/><circle cx="20.5" cy="12" r="2.8" fill="#1a1c20"/><rect x="10" y="22" width="12" height="2" rx="1" fill="#1a1c20" opacity=".35"/><rect x="11.5" y="24" width="3" height="7" rx="1.5" fill="#4fc3f7"/><rect x="17.5" y="24" width="3" height="7" rx="1.5" fill="#4fc3f7"/><rect x="9" y="30" width="14" height="2.5" rx="1.2" fill="#4fc3f7" opacity=".4"/></svg>RCON</div>
   <div id="hdr-server">Connecting...</div>
   <button id="hdr-switch" onclick="showLoginOverlay()" title="Switch server">⇄ Switch Server</button>
   <button id="hdr-settings" onclick="showSettings()" title="Settings">&#9881; Settings</button>
+  <button id="hdr-about" onclick="showAbout()" title="About">&#9432; About</button>
   <a id="hdr-logout" href="/logout" title="Sign out">⏻ Logout</a>
   <div id="hdr-status" class="err">
     <div id="status-dot"></div>
@@ -2402,6 +2482,25 @@ document.getElementById('settings-overlay').addEventListener('click', e => {
   if (e.target === document.getElementById('settings-overlay')) hideSettings();
 });
 
+function showAbout() {
+  document.getElementById('about-overlay').classList.remove('hidden');
+  fetch('/api/about').then(r => r.json()).then(d => {
+    document.getElementById('ab-version').textContent  = d.version  || '—';
+    document.getElementById('ab-python').textContent   = d.python   || '—';
+    document.getElementById('ab-aiohttp').textContent  = d.aiohttp  || '—';
+    document.getElementById('ab-platform').textContent = d.platform || '—';
+    if (d.github) document.getElementById('ab-github').href = d.github;
+  }).catch(() => {});
+}
+
+function hideAbout() {
+  document.getElementById('about-overlay').classList.add('hidden');
+}
+
+document.getElementById('about-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('about-overlay')) hideAbout();
+});
+
 async function settingsSavePassword() {
   const cur     = document.getElementById('set-pwd-cur').value;
   const newPwd  = document.getElementById('set-pwd-new').value;
@@ -2740,6 +2839,17 @@ async def _handle_api_worldcfg(req):
         return web.json_response({'error': str(e)}, status=503)
 
 
+async def _handle_about(req):
+    import sys, platform
+    return web.json_response({
+        'version':    _APP_VERSION,
+        'python':     sys.version.split()[0],
+        'aiohttp':    aiohttp.__version__,
+        'platform':   platform.system() + ' ' + platform.release(),
+        'github':     'https://github.com/username-mendoza/rust-rcon-panel',
+    })
+
+
 async def _handle_time(req):
     now = datetime.datetime.now().astimezone()
     try:
@@ -3075,6 +3185,7 @@ def main():
     app.router.add_get('/ws',                     _handle_ws)
     app.router.add_get('/api/cfg',                _handle_api_cfg)
     app.router.add_get('/api/worldcfg',           _handle_api_worldcfg)
+    app.router.add_get('/api/about',              _handle_about)
     app.router.add_get('/api/time',               _handle_time)
     app.router.add_get('/api/monuments',          _handle_monuments)
     app.router.add_get('/api/players',            _handle_players_api)
