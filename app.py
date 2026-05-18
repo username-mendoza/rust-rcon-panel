@@ -17,7 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.19.1'
+_APP_VERSION = '1.19.2'
 
 CONFIG = {}
 
@@ -2417,6 +2417,16 @@ async function loginConnect() {
   btn.disabled = true;
   loginSetStatus('Connecting…');
   try {
+    // Auto-save as a profile if this is a new connection (no profile selected yet)
+    if (!_loginSelId) {
+      const sr = await fetch('/api/profiles', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name || host, host, port, password: pass})
+      });
+      const sd = await sr.json();
+      if (sd.ok) { _loginSelId = sd.id; await loadLoginProfiles(); }
+    }
     const r = await fetch('/api/connect', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
