@@ -17,7 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.19.5'
+_APP_VERSION = '1.19.6'
 
 CONFIG = {}
 
@@ -1090,8 +1090,6 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
       <div class="si"><span class="si-k">Game Time</span><span class="si-v" id="si-gametime">--</span></div>
       <div class="si"><span class="si-k">FPS</span><span class="si-v" id="si-fps">--</span></div>
       <div class="si"><span class="si-k">Memory</span><span class="si-v" id="si-mem">--</span></div>
-      <div class="si"><span class="si-k">Server Time</span><span class="si-v" id="si-time">--</span></div>
-      <div class="si"><span class="si-k">Timezone</span><span class="si-v" id="si-tz" style="font-size:11px">--</span></div>
     </div>
 
     <div class="sb-hdr">Players <span class="sb-badge" id="p-count">0</span></div>
@@ -1635,18 +1633,6 @@ document.querySelectorAll('#map-filters input[type=checkbox]').forEach(cb => {
 });
 
 // ── Server clock ───────────────────────────────────────────────────────────
-let _srvTimeOffset = 0; // ms: serverTime - Date.now()
-
-fetch('/api/time').then(r => r.json()).then(d => {
-  _srvTimeOffset = d.ts * 1000 - Date.now();
-  $('si-tz').textContent = d.tz;
-}).catch(() => {});
-
-setInterval(() => {
-  const now = new Date(Date.now() + _srvTimeOffset);
-  $('si-time').textContent = now.toLocaleTimeString('en-US',
-    {hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'});
-}, 1000);
 
 fetch('/api/cfg').then(r=>r.json()).then(c => {
   WORLD_SIZE = c.world_size || 4500;
