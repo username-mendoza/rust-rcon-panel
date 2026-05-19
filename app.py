@@ -17,7 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.19.3'
+_APP_VERSION = '1.19.4'
 
 CONFIG = {}
 
@@ -1083,11 +1083,14 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 
     <div class="sb-hdr">Server Info</div>
     <div id="srv-info">
-      <div class="si"><span class="si-k">Players</span><span class="si-v" id="si-pl">--</span></div>
+      <div class="si"><span class="si-k">Online</span><span class="si-v" id="si-pl">--</span></div>
+      <div class="si"><span class="si-k">Joining</span><span class="si-v" id="si-joining">--</span></div>
+      <div class="si"><span class="si-k">Sleeping</span><span class="si-v" id="si-sleeping">--</span></div>
       <div class="si"><span class="si-k">Map</span><span class="si-v" id="si-map">--</span></div>
+      <div class="si"><span class="si-k">Game Time</span><span class="si-v" id="si-gametime">--</span></div>
       <div class="si"><span class="si-k">FPS</span><span class="si-v" id="si-fps">--</span></div>
       <div class="si"><span class="si-k">Memory</span><span class="si-v" id="si-mem">--</span></div>
-      <div class="si"><span class="si-k">Time</span><span class="si-v" id="si-time">--</span></div>
+      <div class="si"><span class="si-k">Server Time</span><span class="si-v" id="si-time">--</span></div>
       <div class="si"><span class="si-k">Timezone</span><span class="si-v" id="si-tz" style="font-size:11px">--</span></div>
     </div>
 
@@ -1265,12 +1268,14 @@ function sayMsg() {
 
 // ── Server info / player list ──────────────────────────────────────────────
 function parseStatus(msg) {
-  const set = (id, v) => { if (v) $(id).textContent = v; };
+  const set = (id, v) => { if (v != null) $(id).textContent = v; };
   const hn  = msg.match(/hostname\s*:\s*(.+)/i);                  if (hn)  hsvr.textContent = hn[1].trim();
   const pl  = msg.match(/players\s*:\s*(\d+)\s*\((\d+)\s*max/i); if (pl)  set('si-pl', pl[1]+' / '+pl[2]);
-  const map = msg.match(/map\s*:\s*(.+)/i);                        if (map) set('si-map', map[1].trim().replace(/^"|"$/g,''));
-  const fps = msg.match(/fps(?:\s+avg)?\s*[:\|]\s*([\d.]+)/i);    if (fps) set('si-fps', parseFloat(fps[1]).toFixed(1));
-  const mem = msg.match(/(\d+)\s*mb/i);                            if (mem) set('si-mem', mem[1]+' MB');
+  const jn  = msg.match(/\((\d+)\s*joining\)/i);                  if (jn)  set('si-joining', jn[1]);
+  const slp = msg.match(/\((\d+)\s*sleeping\)/i);                 if (slp) set('si-sleeping', slp[1]);
+  const map = msg.match(/map\s*:\s*(.+)/i);                       if (map) set('si-map', map[1].trim().replace(/^"|"$/g,''));
+  const fps = msg.match(/fps(?:\s+avg)?\s*[:\|]\s*([\d.]+)/i);   if (fps) set('si-fps', parseFloat(fps[1]).toFixed(1));
+  const mem = msg.match(/(\d+)\s*mb/i);                           if (mem) set('si-mem', mem[1]+' MB');
 }
 
 function parsePlayers(msg) {
@@ -2271,6 +2276,7 @@ function onMsg(e) {
     setTimeout(() => sendBg('status'),      300);
     setTimeout(() => sendBg('serverinfo'),  600);
     setTimeout(() => sendBg('playerlist'),  900);
+    setTimeout(() => sendBg('env.time'),   1200);
     fetchWorldCfg();
   } else if (d.type === 'disconnected') {
     setOk(false);
@@ -2282,7 +2288,7 @@ function onMsg(e) {
       showLoginOverlay();
     } else if (d.connected) {
       hideLoginOverlay();
-      setTimeout(()=>sendBg('status'),300); setTimeout(()=>sendBg('serverinfo'),600); setTimeout(()=>sendBg('playerlist'),900);
+      setTimeout(()=>sendBg('status'),300); setTimeout(()=>sendBg('serverinfo'),600); setTimeout(()=>sendBg('playerlist'),900); setTimeout(()=>sendBg('env.time'),1200);
       fetchWorldCfg();
     }
   } else if (d.type === 'rcon') {
@@ -2320,6 +2326,8 @@ function onMsg(e) {
           $('si-fps').textContent = parseFloat(si.Framerate).toFixed(1);
           $('si-mem').textContent = si.Memory + ' MB';
           if (si.Hostname) hsvr.textContent = si.Hostname;
+          if (si.Players  != null && si.MaxPlayers != null) $('si-pl').textContent = si.Players + ' / ' + si.MaxPlayers;
+          if (si.Joining  != null) $('si-joining').textContent = si.Joining + (si.Queued ? ' (+' + si.Queued + ' queued)' : '');
           return;
         }
       } catch(e) {}
@@ -2327,6 +2335,14 @@ function onMsg(e) {
 
     // Location data — parse silently if matched, otherwise fall through to console
     if (parseLocations(msg)) return;
+
+    // env.time ConVar response — format float 0-24 as HH:MM in-game time
+    const etm = msgT.match(/^env\.time\s*:\s*"?([\d.]+)"?/i);
+    if (etm) {
+      const t = parseFloat(etm[1]), h = Math.floor(t), m = Math.floor((t - h) * 60);
+      $('si-gametime').textContent = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+      return;
+    }
 
     // Status response — parse into sidebar, suppress raw output from console
     if (/hostname\s*:/i.test(msg)) { parseStatus(msg); return; }
@@ -2565,7 +2581,7 @@ function connect() {
   ws.onclose   = async () => { setOk(false); if (await checkAuthAndRedirect()) return; log('Panel disconnected -- reconnecting in 3s...', 'sys'); setTimeout(connect, 3000); };
 }
 
-setInterval(() => { if (rconOk) { sendBg('playerlist'); sendBg('serverinfo'); } }, 60000);
+setInterval(() => { if (rconOk) { sendBg('playerlist'); sendBg('serverinfo'); sendBg('status'); sendBg('env.time'); } }, 60000);
 connect();
 </script>
 </body>
