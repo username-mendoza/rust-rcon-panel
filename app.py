@@ -17,7 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.19.4'
+_APP_VERSION = '1.19.5'
 
 CONFIG = {}
 
@@ -1908,6 +1908,9 @@ function parseLocations(msg) {
     const now = new Date().toLocaleTimeString('en-US', {hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
     $('map-updated').textContent = 'Updated ' + now;
     if (activeTab === 'map') drawMap();
+    // location covers all players (online + sleeping); subtract live ones to get sleeping count
+    const sleeping = Object.keys(mapPlayers).filter(id => !livePlayers[id]).length;
+    $('si-sleeping').textContent = sleeping;
   }
   return updated;
 }
@@ -2277,6 +2280,7 @@ function onMsg(e) {
     setTimeout(() => sendBg('serverinfo'),  600);
     setTimeout(() => sendBg('playerlist'),  900);
     setTimeout(() => sendBg('env.time'),   1200);
+    setTimeout(() => sendBg('location'),   1500);
     fetchWorldCfg();
   } else if (d.type === 'disconnected') {
     setOk(false);
@@ -2288,7 +2292,7 @@ function onMsg(e) {
       showLoginOverlay();
     } else if (d.connected) {
       hideLoginOverlay();
-      setTimeout(()=>sendBg('status'),300); setTimeout(()=>sendBg('serverinfo'),600); setTimeout(()=>sendBg('playerlist'),900); setTimeout(()=>sendBg('env.time'),1200);
+      setTimeout(()=>sendBg('status'),300); setTimeout(()=>sendBg('serverinfo'),600); setTimeout(()=>sendBg('playerlist'),900); setTimeout(()=>sendBg('env.time'),1200); setTimeout(()=>sendBg('location'),1500);
       fetchWorldCfg();
     }
   } else if (d.type === 'rcon') {
@@ -2581,7 +2585,7 @@ function connect() {
   ws.onclose   = async () => { setOk(false); if (await checkAuthAndRedirect()) return; log('Panel disconnected -- reconnecting in 3s...', 'sys'); setTimeout(connect, 3000); };
 }
 
-setInterval(() => { if (rconOk) { sendBg('playerlist'); sendBg('serverinfo'); sendBg('status'); sendBg('env.time'); } }, 60000);
+setInterval(() => { if (rconOk) { sendBg('playerlist'); sendBg('serverinfo'); sendBg('status'); sendBg('env.time'); sendBg('location'); } }, 60000);
 connect();
 </script>
 </body>
