@@ -17,7 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.19.2'
+_APP_VERSION = '1.19.3'
 
 CONFIG = {}
 
@@ -2267,14 +2267,14 @@ function onMsg(e) {
     hideLoginOverlay();
     document.getElementById('login-connect-btn').disabled = false;
     setOk(true);
-    log('RCON connected to game server', 'ok');
-    setTimeout(() => send('status'),        300);
+    log('RCON connected', 'ok');
+    setTimeout(() => sendBg('status'),      300);
     setTimeout(() => sendBg('serverinfo'),  600);
     setTimeout(() => sendBg('playerlist'),  900);
     fetchWorldCfg();
   } else if (d.type === 'disconnected') {
     setOk(false);
-    log('RCON connection lost -- retrying in 5s...', 'err');
+    log('RCON disconnected, retrying…', 'sys');
   } else if (d.type === 'status') {
     _hasProfile = d.has_profile;
     setOk(d.connected);
@@ -2282,7 +2282,7 @@ function onMsg(e) {
       showLoginOverlay();
     } else if (d.connected) {
       hideLoginOverlay();
-      setTimeout(()=>send('status'),300); setTimeout(()=>sendBg('serverinfo'),600); setTimeout(()=>sendBg('playerlist'),900);
+      setTimeout(()=>sendBg('status'),300); setTimeout(()=>sendBg('serverinfo'),600); setTimeout(()=>sendBg('playerlist'),900);
       fetchWorldCfg();
     }
   } else if (d.type === 'rcon') {
@@ -2328,10 +2328,10 @@ function onMsg(e) {
     // Location data — parse silently if matched, otherwise fall through to console
     if (parseLocations(msg)) return;
 
-    // Server info
-    if (/hostname\s*:/i.test(msg)) parseStatus(msg);
-    if (/\d{17}/.test(msg))        parsePlayers(msg);
-    if (/fps\s*[:\|]/i.test(msg))  parseStatus(msg);
+    // Status response — parse into sidebar, suppress raw output from console
+    if (/hostname\s*:/i.test(msg)) { parseStatus(msg); return; }
+    if (/fps\s*[:\|]/i.test(msg))  { parseStatus(msg); return; }
+    if (/\d{17}/.test(msg))          parsePlayers(msg);
 
     msgT.split('\n').forEach(l => { if (l.trim()) log(l); });
   }
@@ -2754,7 +2754,7 @@ async def _rcon_loop():
         try:
             to = aiohttp.ClientTimeout(total=None, connect=10, sock_connect=10)
             async with aiohttp.ClientSession(timeout=to) as sess:
-                async with sess.ws_connect(url, heartbeat=20) as ws:
+                async with sess.ws_connect(url) as ws:
                     _rcon_ok = True
                     await _broadcast({'type': 'connected'})
                     stop = asyncio.Event()
