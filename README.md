@@ -4,7 +4,7 @@ A self-hosted web management panel for Rust dedicated servers. Single-file Pytho
 
 ```
   .-.
- (☠.☠)   RCON · Console · Chat · Map · Players · Bans
+ (☠.☠)   RCON · Console · Chat · Map · Players · Bans · Oxide
   )=(
  /   \
 ```
@@ -17,8 +17,15 @@ A self-hosted web management panel for Rust dedicated servers. Single-file Pytho
 - **Chat tab** — monitor and send in-game chat
 - **Interactive map** — canvas-based terrain overlay with monument markers, player positions, tier filters, pan & zoom
 - **Live world info** — seed and world size read live from RCON on connect, rustmaps.com deep-link auto-populated
-- **Players tab** — online players with ping, full session history, playtime tracking
+- **Players tab** — online players with ping and right-click action menu (kick, ban, give item, mute, teleport); offline players show full session history and playtime
 - **Ban management** — view ban list, unban players with one click
+- **Oxide tab** — full plugin manager:
+  - Lists all plugins — loaded (green) and unloaded/on-disk (grey)
+  - Per-plugin Reload, Unload, and Load buttons
+  - Reload All
+  - **Update checker** — queries ServerArmour aggregator for uMod, Codefling, and Chaos plugins; shows available version next to installed version
+  - **Auto-update** — one-click download and reload for uMod plugins
+  - **Manual upload** — upload a `.cs` or `.zip` file from your PC; ZIP upload shows an integrity check confirmation modal listing exactly what will be written (plugin files + language files) before committing anything to disk
 - **Multi-server profiles** — save multiple RCON connections, auto-connects to last-used server on login
 - **Remote panel support** — point a secondary panel at the primary to share map image and monuments over HTTP
 - **About popup** — version, Python, aiohttp info accessible from the UI
