@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.7'
+_APP_VERSION = '1.20.8'
 
 CONFIG = {}
 
@@ -1141,6 +1141,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 
     <!-- Oxide tab -->
     <div class="panel" id="panel-oxide">
+      <input type="file" id="oxide-file-input" accept=".cs" style="display:none" onchange="oxideHandleFileSelect(this)">
       <div id="oxide-toolbar">
         <button id="oxide-reload-all-btn" onclick="oxideReloadAll()">&#8635; Reload All</button>
         <button id="oxide-refresh-btn" onclick="loadOxideTab(true)">&#8635; Refresh</button>
@@ -2736,6 +2737,7 @@ function renderOxideTab() {
         actHtml += `<a class="ox-act ext-link" href="${esc(upd.url)}" target="_blank" style="margin-left:4px" title="${esc(upd.marketplace||'Marketplace')}">&#8599; ${esc(upd.marketplace||'Update')}</a>`;
       }
     }
+    actHtml += `<button class="ox-act" style="margin-left:4px" onclick="oxideUploadFile('${slugSafe}')" title="Upload .cs from your PC">&#8657; Upload</button>`;
     if (!loaded) tr.style.opacity = '0.55';
     tr.innerHTML =
       `<td><span class="ox-dot${loaded?'':' unloaded'}"></span></td>` +
@@ -2781,6 +2783,33 @@ async function oxideLoad(name) {
     $('oxide-status-msg').textContent = d.result || (d.ok ? 'Loaded' : (d.error || 'Failed'));
     setTimeout(() => loadOxideTab(true), 1500);
   } catch(e) { $('oxide-status-msg').textContent = 'Request failed'; }
+}
+
+let _oxideUploadTarget = null;
+function oxideUploadFile(slug) {
+  _oxideUploadTarget = slug;
+  const inp = $('oxide-file-input');
+  inp.value = '';
+  inp.click();
+}
+async function oxideHandleFileSelect(input) {
+  const file = input.files[0];
+  if (!file) return;
+  if (!file.name.endsWith('.cs')) {
+    $('oxide-status-msg').textContent = 'Select a .cs file';
+    return;
+  }
+  const slug = _oxideUploadTarget;
+  $('oxide-status-msg').textContent = 'Uploading ' + (slug || file.name) + '…';
+  const fd = new FormData();
+  fd.append('slug', slug || file.name.replace(/\.cs$/i, ''));
+  fd.append('file', file);
+  try {
+    const r = await fetch('/api/oxide/upload', {method: 'POST', body: fd});
+    const d = await r.json();
+    $('oxide-status-msg').textContent = d.result || (d.ok ? 'Uploaded!' : (d.error || 'Failed'));
+    if (d.ok) setTimeout(() => loadOxideTab(true), 2000);
+  } catch(e) { $('oxide-status-msg').textContent = 'Upload failed'; }
 }
 
 async function oxideReloadAll() {
@@ -3632,6 +3661,42 @@ async def _handle_oxide_update(req):
         return web.json_response({'ok': True, 'result': f'Downloaded OK — reload: {e}'})
 
 
+async def _handle_oxide_upload(req):
+    """Accept a multipart .cs file upload and install it as a plugin."""
+    try:
+        reader = await req.multipart()
+    except Exception:
+        return web.json_response({'ok': False, 'error': 'Expected multipart form'}, status=400)
+    slug    = None
+    content = None
+    async for part in reader:
+        if part.name == 'slug':
+            slug = (await part.read()).decode('utf-8', errors='replace').strip()
+        elif part.name == 'file':
+            content = await part.read()
+    if not slug or not re.match(r'^\w+$', slug):
+        return web.json_response({'ok': False, 'error': 'Invalid plugin name'}, status=400)
+    if not content or len(content) < 50:
+        return web.json_response({'ok': False, 'error': 'Empty or too-small file'}, status=400)
+    if b'class ' not in content and b'namespace' not in content:
+        return web.json_response({'ok': False, 'error': 'File does not look like a C# plugin'}, status=400)
+    plugin_path = f'/home/steam/rustserver/oxide/plugins/{slug}.cs'
+    tmp_path    = plugin_path + '.tmp'
+    try:
+        def _write():
+            with open(tmp_path, 'wb') as f:
+                f.write(content)
+            os.replace(tmp_path, plugin_path)
+        await asyncio.to_thread(_write)
+    except Exception as e:
+        return web.json_response({'ok': False, 'error': f'Write failed: {e}'}, status=500)
+    try:
+        result = await _rcon_query(f'oxide.reload {slug}', timeout=15.0)
+        return web.json_response({'ok': True, 'result': result.strip()})
+    except Exception as e:
+        return web.json_response({'ok': True, 'result': f'Saved OK — reload: {e}'})
+
+
 async def _cleanup_loop():
     while True:
         await asyncio.sleep(300)
@@ -3758,6 +3823,7 @@ def main():
     app.router.add_post('/api/oxide/action',      _handle_oxide_action)
     app.router.add_get('/api/oxide/updates',      _handle_oxide_updates)
     app.router.add_post('/api/oxide/update',      _handle_oxide_update)
+    app.router.add_post('/api/oxide/upload',      _handle_oxide_upload)
     app.router.add_get('/login',                  _handle_login_get)
     app.router.add_post('/login',                 _handle_login_post)
     app.router.add_get('/logout',                 _handle_logout)
