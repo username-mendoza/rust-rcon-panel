@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.4'
+_APP_VERSION = '1.20.5'
 
 CONFIG = {}
 
@@ -2688,7 +2688,6 @@ async function loadOxideTab(force) {
     if (!r.ok) { $('oxide-status-msg').textContent = 'Error ' + r.status; return; }
     oxideData = await r.json();
     oxideCache = now;
-    oxideUpdates = {};
     renderOxideTab();
   } catch(e) { $('oxide-status-msg').textContent = 'Request failed'; }
 }
@@ -2778,6 +2777,7 @@ async function oxideCheckUpdates() {
   if (!oxideData || !oxideData.plugins.length) return;
   const btn = $('oxide-updates-btn');
   btn.disabled = true;
+  oxideUpdates = {};
   $('oxide-status-msg').textContent = 'Checking updates…';
   try {
     const slugs = oxideData.plugins.map(p => p.slug || p.name.replace(/\s+/g, '')).filter(Boolean).join(',');
@@ -2805,7 +2805,7 @@ async function oxideUpdate(name, downloadUrl) {
     });
     const d = await r.json();
     $('oxide-status-msg').textContent = d.result || (d.ok ? 'Updated!' : (d.error || 'Failed'));
-    if (d.ok) { oxideData = null; setTimeout(() => loadOxideTab(true), 2000); }
+    if (d.ok) setTimeout(() => loadOxideTab(true), 2000);
   } catch(e) { $('oxide-status-msg').textContent = 'Request failed'; }
 }
 
