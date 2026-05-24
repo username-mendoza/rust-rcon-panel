@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.2'
+_APP_VERSION = '1.20.3'
 
 CONFIG = {}
 
@@ -909,6 +909,9 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 }
 .ox-act:hover { border-color: var(--accent); color: var(--accent); }
 .ox-act.unload:hover { border-color: var(--red); color: var(--red); }
+.ox-act.update { border-color: var(--green); color: var(--green); }
+.ox-act.update:hover { background: rgba(76,175,80,.1); }
+.ox-act.ext-link { text-decoration: none; display: inline-block; }
 .ox-upd-badge { font-size: 10px; color: var(--yellow); margin-left: 5px; }
 .ox-up-to-date { font-size: 10px; color: var(--green); margin-left: 5px; }
 
@@ -2710,16 +2713,24 @@ function renderOxideTab() {
         verHtml += '<span class="ox-up-to-date" title="Up to date">&#10003;</span>';
       }
     }
+    let actHtml =
+      `<button class="ox-act" onclick="oxideReload('${nameSafe}')">Reload</button>` +
+      `<button class="ox-act unload" style="margin-left:4px" onclick="oxideUnload('${nameSafe}')">Unload</button>`;
+    if (upd && upd.found && upd.latest && upd.latest !== p.version) {
+      if (upd.download_url) {
+        const dlSafe = (upd.download_url||'').replace(/'/g,"\\'");
+        actHtml += `<button class="ox-act update" style="margin-left:4px" onclick="oxideUpdate('${nameSafe}','${dlSafe}')">&#8593; Update</button>`;
+      } else if (upd.url) {
+        actHtml += `<a class="ox-act ext-link" href="${esc(upd.url)}" target="_blank" style="margin-left:4px" title="${esc(upd.marketplace||'Marketplace')}">&#8599; ${esc(upd.marketplace||'Update')}</a>`;
+      }
+    }
     tr.innerHTML =
       `<td><span class="ox-dot"></span></td>` +
       `<td>${esc(p.name)}</td>` +
       `<td>${verHtml}</td>` +
       `<td>${esc(p.author)}</td>` +
       `<td style="color:var(--dim);font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.description)}</td>` +
-      `<td style="white-space:nowrap">` +
-        `<button class="ox-act" onclick="oxideReload('${nameSafe}')">Reload</button>` +
-        `<button class="ox-act unload" style="margin-left:4px" onclick="oxideUnload('${nameSafe}')">Unload</button>` +
-      `</td>`;
+      `<td style="white-space:nowrap">${actHtml}</td>`;
     tb.appendChild(tr);
   }
 }
@@ -2783,6 +2794,19 @@ async function oxideCheckUpdates() {
       : 'All plugins up to date';
   } catch(e) { $('oxide-status-msg').textContent = 'Update check failed'; }
   finally { btn.disabled = false; }
+}
+
+async function oxideUpdate(name, downloadUrl) {
+  $('oxide-status-msg').textContent = 'Downloading ' + name + '…';
+  try {
+    const r = await fetch('/api/oxide/update', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, download_url: downloadUrl})
+    });
+    const d = await r.json();
+    $('oxide-status-msg').textContent = d.result || (d.ok ? 'Updated!' : (d.error || 'Failed'));
+    if (d.ok) { oxideData = null; setTimeout(() => loadOxideTab(true), 2000); }
+  } catch(e) { $('oxide-status-msg').textContent = 'Request failed'; }
 }
 
 // ── WebSocket connection ───────────────────────────────────────────────────
@@ -3436,26 +3460,142 @@ async def _handle_oxide_action(req):
         return web.json_response({'ok': False, 'error': str(e)}, status=503)
 
 
+_UC_CONFIG_PATH = '/home/steam/rustserver/oxide/config/UpdateChecker.json'
+
+def _load_uc_map() -> dict:
+    """Return {slugKey: {marketplace, url}} from UpdateChecker.json."""
+    try:
+        with open(_UC_CONFIG_PATH) as f:
+            data = json.load(f)
+        result = {}
+        for p in data.get('List of plugins', []):
+            key = re.sub(r'\s+', '', p.get('Name', ''))
+            result[key] = {
+                'marketplace': p.get('Marketplace', ''),
+                'url':         p.get('Link to plugin', ''),
+            }
+        return result
+    except Exception:
+        return {}
+
+
 async def _handle_oxide_updates(req):
     names_param = req.rel_url.query.get('plugins', '')
     if not names_param:
         return web.json_response({})
-    names = [n.strip() for n in names_param.split(',') if n.strip()][:30]
+    slugs = [n.strip() for n in names_param.split(',') if n.strip()][:50]
 
-    async def _check_one(name):
-        url = f'https://umod.org/plugins/{name}.json'
-        try:
-            async with _http_session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    latest = data.get('latest_release_version', '')
-                    return name, {'found': True, 'latest': latest}
-        except Exception:
-            pass
-        return name, {'found': False, 'latest': ''}
+    uc_map = await asyncio.to_thread(_load_uc_map)
+    sem = asyncio.Semaphore(6)
+    hdrs = {'User-Agent': f'RconPanel/{_APP_VERSION}'}
 
-    results = await asyncio.gather(*[_check_one(n) for n in names])
+    async def _check_umod(slug, page_url):
+        umod_slug = page_url.rstrip('/').split('/')[-1]
+        api_url = f'https://umod.org/plugins/{umod_slug}.json'
+        async with _http_session.get(api_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            if resp.status != 200:
+                return None
+            d = await resp.json(content_type=None)
+            return {
+                'found':        True,
+                'latest':       d.get('latest_release_version', ''),
+                'marketplace':  'uMod',
+                'url':          page_url,
+                'download_url': d.get('download_url', ''),
+            }
+
+    async def _check_sa(slug, known_url):
+        sa_url = f'https://serverarmour.com/api/v3/marketplace/search?plugin={slug}'
+        async with _http_session.get(sa_url, timeout=aiohttp.ClientTimeout(total=10), headers=hdrs) as resp:
+            if resp.status != 200:
+                return None
+            d = await resp.json(content_type=None)
+            if d.get('status') != 200 or not d.get('data'):
+                return None
+            slug_lower = slug.lower()
+            best = None
+            for item in d['data']:
+                item_url = (item.get('url') or '').lower()
+                # Prefer URL match from UpdateChecker config
+                if known_url and (known_url.lower() in item_url or item_url in known_url.lower()):
+                    best = item
+                    break
+            if not best:
+                for item in d['data']:
+                    item_slug = (item.get('slug') or '').lower().replace('-', '')
+                    item_name = (item.get('name') or '').lower().replace(' ', '')
+                    if item_slug == slug_lower or item_name == slug_lower:
+                        best = item
+                        break
+            if not best:
+                return None
+            return {
+                'found':        True,
+                'latest':       best.get('latestVersion', ''),
+                'marketplace':  best.get('marketplace', ''),
+                'url':          best.get('url', ''),
+                'download_url': '',
+            }
+
+    async def _check_one(slug):
+        async with sem:
+            info = uc_map.get(slug, {})
+            marketplace = info.get('marketplace', '')
+            page_url    = info.get('url', '')
+            try:
+                if marketplace == 'uMod' and page_url:
+                    result = await _check_umod(slug, page_url)
+                else:
+                    result = await _check_sa(slug, page_url)
+                if result:
+                    return slug, result
+            except Exception:
+                pass
+            return slug, {'found': False, 'latest': '', 'marketplace': marketplace, 'url': page_url, 'download_url': ''}
+
+    results = await asyncio.gather(*[_check_one(s) for s in slugs])
     return web.json_response(dict(results))
+
+
+async def _handle_oxide_update(req):
+    """Download a uMod plugin .cs file and reload it via RCON."""
+    try:
+        d = await req.json()
+    except Exception:
+        return web.json_response({'ok': False, 'error': 'Invalid JSON'}, status=400)
+    name         = (d.get('name') or '').strip()
+    download_url = (d.get('download_url') or '').strip()
+    if not name or not download_url:
+        return web.json_response({'ok': False, 'error': 'name and download_url required'}, status=400)
+    if not re.match(r'^\w+$', name):
+        return web.json_response({'ok': False, 'error': 'invalid plugin name'}, status=400)
+    if not download_url.startswith('https://umod.org/'):
+        return web.json_response({'ok': False, 'error': 'only uMod downloads supported'}, status=400)
+    plugin_path = f'/home/steam/rustserver/oxide/plugins/{name}.cs'
+    tmp_path    = plugin_path + '.tmp'
+    try:
+        async with _http_session.get(download_url, timeout=aiohttp.ClientTimeout(total=30),
+                                      headers={'User-Agent': f'RconPanel/{_APP_VERSION}'}) as resp:
+            if resp.status != 200:
+                return web.json_response({'ok': False, 'error': f'Download failed: HTTP {resp.status}'}, status=502)
+            content = await resp.read()
+    except Exception as e:
+        return web.json_response({'ok': False, 'error': f'Download error: {e}'}, status=502)
+    if len(content) < 50 or (b'class ' not in content and b'namespace' not in content):
+        return web.json_response({'ok': False, 'error': 'Downloaded content does not look like a plugin'}, status=502)
+    try:
+        def _write():
+            with open(tmp_path, 'wb') as f:
+                f.write(content)
+            os.replace(tmp_path, plugin_path)
+        await asyncio.to_thread(_write)
+    except Exception as e:
+        return web.json_response({'ok': False, 'error': f'Write failed: {e}'}, status=500)
+    try:
+        result = await _rcon_query(f'oxide.reload {name}', timeout=15.0)
+        return web.json_response({'ok': True, 'result': result.strip()})
+    except Exception as e:
+        return web.json_response({'ok': True, 'result': f'Downloaded OK — reload: {e}'})
 
 
 async def _cleanup_loop():
@@ -3583,6 +3723,7 @@ def main():
     app.router.add_get('/api/oxide',              _handle_oxide)
     app.router.add_post('/api/oxide/action',      _handle_oxide_action)
     app.router.add_get('/api/oxide/updates',      _handle_oxide_updates)
+    app.router.add_post('/api/oxide/update',      _handle_oxide_update)
     app.router.add_get('/login',                  _handle_login_get)
     app.router.add_post('/login',                 _handle_login_post)
     app.router.add_get('/logout',                 _handle_logout)
