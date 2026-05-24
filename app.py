@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.5'
+_APP_VERSION = '1.20.6'
 
 CONFIG = {}
 
@@ -2274,7 +2274,11 @@ function renderPlayersTable() {
       '<td>'+fmtDate(p.first_seen)+'</td>' +
       '<td>'+fmtDate(p.last_seen)+'</td>' +
       pingCell;
-    tr.onclick = () => togglePlayerSessions(tr, p);
+    if (p.online) {
+      tr.onclick = e => { e.stopPropagation(); showPlayerMenu(e, {id: p.id, name: p.name, ping: (livePlayers[p.id] || {}).ping ?? null}); };
+    } else {
+      tr.onclick = () => togglePlayerSessions(tr, p);
+    }
     tbody.appendChild(tr);
   }
 }
