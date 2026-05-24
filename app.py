@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.9'
+_APP_VERSION = '1.20.10'
 
 CONFIG = {}
 
@@ -3610,7 +3610,7 @@ async def _handle_oxide_updates(req):
     names_param = req.rel_url.query.get('plugins', '')
     if not names_param:
         return web.json_response({})
-    slugs = [n.strip() for n in names_param.split(',') if n.strip()][:50]
+    slugs = [n.strip() for n in names_param.split(',') if n.strip()][:100]
 
     uc_map = await asyncio.to_thread(_load_uc_map)
     sem = asyncio.Semaphore(6)
