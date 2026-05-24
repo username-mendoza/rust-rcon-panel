@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Rust RCON Panel — Full Stack Installer v1.18.0
+#  Rust RCON Panel — Full Stack Installer v1.19.6
 #  Installs: SteamCMD · Rust Server · Oxide · Plugins · Panel
 #  Requires: Debian/Ubuntu Linux, root
 # =============================================================================

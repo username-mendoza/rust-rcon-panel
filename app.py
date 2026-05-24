@@ -8,11 +8,14 @@ import hashlib
 import hmac
 import json
 import os
+import platform
 import re
 import ssl
+import sys
 import time
 from html import escape as _he
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
@@ -38,9 +41,12 @@ _rcon_pending: dict = {}  # identifier -> asyncio.Future
 _login_attempts: dict = {}  # ip -> [timestamp, ...]
 _profiles_lock: asyncio.Lock = None  # initialised in _startup
 
-_RE_JOIN    = re.compile(r'(\d{17,18})/(.+?)\s+joined')
-_RE_LEAVE   = re.compile(r'(\d{17,18})/(.+?)\s+(?:disconnect|left the game)', re.I)
-_RE_STEAMID = re.compile(r'^\d{17}$')
+_RE_JOIN         = re.compile(r'(\d{17,18})/(.+?)\s+joined')
+_RE_LEAVE        = re.compile(r'(\d{17,18})/(.+?)\s+(?:disconnect|left the game)', re.I)
+_RE_STEAMID      = re.compile(r'^\d{17}$')
+_RE_BAN_SID      = re.compile(r'\b(\d{17})\b')
+_RE_BAN_IDX      = re.compile(r'^\d+[.):\s]+')
+_RE_WORLDCFG_VAL = re.compile(r'"(-?\d+)"')
 
 
 def _valid_port(port) -> bool:
@@ -165,8 +171,9 @@ def _profile_for_api(p: dict) -> dict:
     return {**p, 'password': _decrypt_pwd(p.get('password', ''))}
 
 
-def _process_join_leave(msg: str):
+def _process_join_leave(msg: str) -> bool:
     now = int(time.time())
+    changed = False
     for line in msg.splitlines():
         line = line.strip()
         m = _RE_JOIN.search(line)
@@ -181,7 +188,7 @@ def _process_join_leave(msg: str):
                 if 'l' not in s:
                     s['l'] = now
             _player_db[sid]['sessions'].append({'j': now})
-            _save_player_db()
+            changed = True
             continue
         m = _RE_LEAVE.search(line)
         if m:
@@ -191,7 +198,8 @@ def _process_join_leave(msg: str):
                     if 'l' not in s:
                         s['l'] = now
                         break
-                _save_player_db()
+                changed = True
+    return changed
 
 LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -2583,6 +2591,11 @@ _rcon_ok: bool = False
 _msg_id: int = 0
 _mapimg_cache: bytes = None
 _mapimg_cache_ct: str = 'image/jpeg'
+_mapimg_path_cache: bytes = None
+_mapimg_path_cache_ct: str = 'image/png'
+_mapimg_path_mtime: float = 0.0
+_favicon_cache: str = ''
+_http_session: aiohttp.ClientSession = None
 
 
 @web.middleware
@@ -2644,7 +2657,7 @@ async def _handle_login_get(req):
 
 
 async def _handle_login_post(req):
-    ip = req.remote or ''
+    ip = req.headers.get('X-Forwarded-For', req.remote or '').split(',')[0].strip()
     now = time.time()
     attempts = [t for t in _login_attempts.get(ip, []) if now - t < 600]
     if len(attempts) >= 10:
@@ -2726,8 +2739,8 @@ async def _recv(ws):
                     continue
                 await _broadcast({'type': 'rcon', 'data': d})
                 txt = d.get('Message', '')
-                if txt:
-                    _process_join_leave(txt)
+                if txt and _process_join_leave(txt):
+                    asyncio.create_task(asyncio.to_thread(_save_player_db))
             except Exception:
                 pass
         elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
@@ -2772,8 +2785,8 @@ async def _rcon_loop():
                     for t in [recv_t, send_t, restart_t]:
                         t.cancel()
                     await asyncio.gather(recv_t, send_t, restart_t, return_exceptions=True)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f'RCON connect error: {e}', flush=True)
 
         _rcon_ok = False
         await _broadcast({'type': 'disconnected'})
@@ -2824,17 +2837,16 @@ async def _fetch_map_url(url: str):
     attempt = 0
     while True:
         try:
-            async with aiohttp.ClientSession() as sess:
-                async with sess.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                    if resp.status == 200:
-                        data = await resp.read()
-                        ct = resp.content_type or ''
-                        _mapimg_cache = data
-                        _mapimg_cache_ct = 'image/png' if ('png' in ct or url.lower().endswith('.png')) else 'image/jpeg'
-                        print(f'Map image cached from URL ({len(data)//1024} KB)', flush=True)
-                        return
-                    else:
-                        print(f'Map image fetch: HTTP {resp.status}, retrying…', flush=True)
+            async with _http_session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    ct = resp.content_type or ''
+                    _mapimg_cache = data
+                    _mapimg_cache_ct = 'image/png' if ('png' in ct or url.lower().endswith('.png')) else 'image/jpeg'
+                    print(f'Map image cached from URL ({len(data)//1024} KB)', flush=True)
+                    return
+                else:
+                    print(f'Map image fetch: HTTP {resp.status}, retrying…', flush=True)
         except Exception as e:
             print(f'Map image fetch failed: {e}, retrying…', flush=True)
         delay = delays[min(attempt, len(delays) - 1)]
@@ -2853,24 +2865,22 @@ async def _handle_api_cfg(req):
 
 
 async def _handle_api_worldcfg(req):
-    """Query live world seed and size from the connected RCON server."""
     if not _rcon_ok:
         return web.json_response({'error': 'not connected'}, status=503)
-    # ConVar responses come back as: varname: "value"
-    _cv = re.compile(r'"(-?\d+)"')
     def _parse_cv(raw: str):
-        m = _cv.search(raw)
+        m = _RE_WORLDCFG_VAL.search(raw)
         return int(m.group(1)) if m else None
     try:
-        seed_raw = (await _rcon_query('server.seed')).strip()
-        size_raw = (await _rcon_query('server.worldsize')).strip()
-        return web.json_response({'seed': _parse_cv(seed_raw), 'world_size': _parse_cv(size_raw)})
+        seed_raw, size_raw = await asyncio.gather(
+            _rcon_query('server.seed'),
+            _rcon_query('server.worldsize'),
+        )
+        return web.json_response({'seed': _parse_cv(seed_raw.strip()), 'world_size': _parse_cv(size_raw.strip())})
     except Exception as e:
         return web.json_response({'error': str(e)}, status=503)
 
 
 async def _handle_about(req):
-    import sys, platform
     return web.json_response({
         'version':    _APP_VERSION,
         'python':     sys.version.split()[0],
@@ -2880,35 +2890,28 @@ async def _handle_about(req):
     })
 
 
-async def _handle_time(req):
-    now = datetime.datetime.now().astimezone()
-    try:
-        with open('/etc/timezone') as f:
-            tz_name = f.read().strip()
-    except OSError:
-        tz_name = now.strftime('%Z')
-    offset = now.strftime('%z')          # e.g. +0300
-    offset_fmt = offset[:3] + ':' + offset[3:]  # +03:00
-    return web.json_response({
-        'ts':  now.timestamp(),
-        'tz':  f'UTC{offset_fmt} ({tz_name})',
-    })
-
 
 async def _handle_favicon(req):
-    path = os.path.join(os.path.dirname(__file__), 'static', 'favicon.svg')
-    with open(path) as f:
-        svg = f.read()
-    return web.Response(text=svg, content_type='image/svg+xml',
+    global _favicon_cache
+    if not _favicon_cache:
+        path = os.path.join(os.path.dirname(__file__), 'static', 'favicon.svg')
+        with open(path) as f:
+            _favicon_cache = f.read()
+    return web.Response(text=_favicon_cache, content_type='image/svg+xml',
                         headers={'Cache-Control': 'max-age=86400'})
 
 
 async def _handle_mapimg(req):
+    global _mapimg_path_cache, _mapimg_path_cache_ct, _mapimg_path_mtime
     path = CONFIG.get('map', {}).get('image_path', '')
     if path and os.path.exists(path):
-        ct = 'image/png' if path.lower().endswith('.png') else 'image/jpeg'
-        body = await asyncio.to_thread(Path(path).read_bytes)
-        return web.Response(body=body, content_type=ct)
+        mtime = os.path.getmtime(path)
+        if _mapimg_path_cache is None or mtime != _mapimg_path_mtime:
+            ct = 'image/png' if path.lower().endswith('.png') else 'image/jpeg'
+            _mapimg_path_cache    = await asyncio.to_thread(Path(path).read_bytes)
+            _mapimg_path_cache_ct = ct
+            _mapimg_path_mtime    = mtime
+        return web.Response(body=_mapimg_path_cache, content_type=_mapimg_path_cache_ct)
     if _mapimg_cache:
         return web.Response(body=_mapimg_cache, content_type=_mapimg_cache_ct)
     return web.Response(status=404)
@@ -2937,15 +2940,13 @@ async def _handle_monuments(req):
     image_url = CONFIG.get('map', {}).get('image_url', '')
     if image_url:
         # Derive monuments URL from image URL (replace /mapimg path with /monuments)
-        from urllib.parse import urlparse, urlunparse
         parsed = urlparse(image_url)
         mon_url = urlunparse(parsed._replace(path='/monuments', query='', fragment=''))
         try:
-            async with aiohttp.ClientSession() as sess:
-                async with sess.get(mon_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    if resp.status == 200:
-                        body = await resp.text()
-                        return web.Response(text=body, content_type='application/json')
+            async with _http_session.get(mon_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    body = await resp.text()
+                    return web.Response(text=body, content_type='application/json')
         except Exception:
             pass
     return web.Response(text='[]', content_type='application/json')
@@ -2992,8 +2993,7 @@ async def _rcon_query(cmd: str, timeout: float = 8.0) -> str:
         raise Exception('RCON not connected')
     _msg_id += 1
     ident = _msg_id
-    loop = asyncio.get_event_loop()
-    fut = loop.create_future()
+    fut = asyncio.get_running_loop().create_future()
     _rcon_pending[ident] = fut
     _rcon_q.put_nowait({'Identifier': ident, 'Message': cmd, 'Name': 'WebPanel'})
     try:
@@ -3030,14 +3030,12 @@ async def _handle_bans(req):
     #   76561198xxx "Name" "Reason"
     #   76561198xxx 0 0 "Name" "Notes"      (banlistex with extra fields)
     #   1. 76561198xxx "Name"               (numbered entries)
-    _re_sid = re.compile(r'\b(\d{17})\b')
     for line in raw.splitlines():
         line = line.strip()
         if not line:
             continue
-        # Strip leading index numbers ("1." "1)" "1:")
-        line = re.sub(r'^\d+[.):\s]+', '', line).strip()
-        m = _re_sid.search(line)
+        line = _RE_BAN_IDX.sub('', line).strip()
+        m = _RE_BAN_SID.search(line)
         if not m:
             continue
         steamid = m.group(1)
@@ -3160,21 +3158,38 @@ async def _handle_connect(req):
     return web.json_response({'ok': True})
 
 
+async def _cleanup_loop():
+    while True:
+        await asyncio.sleep(300)
+        now = time.time()
+        expired = [k for k, v in list(_sessions.items()) if now > v]
+        for k in expired:
+            _sessions.pop(k, None)
+        stale = [k for k, v in list(_login_attempts.items())
+                 if not any(now - t < 600 for t in v)]
+        for k in stale:
+            _login_attempts.pop(k, None)
+
+
 async def _startup(app):
-    global _rcon_restart, _profiles_lock
+    global _rcon_restart, _profiles_lock, _http_session
     _rcon_restart = asyncio.Event()
     _profiles_lock = asyncio.Lock()
+    _http_session = aiohttp.ClientSession()
     if _rcon_cfg:
         _rcon_restart.set()
-    app['rcon'] = asyncio.create_task(_rcon_loop())
+    app['rcon']    = asyncio.create_task(_rcon_loop())
+    app['cleanup'] = asyncio.create_task(_cleanup_loop())
     url = CONFIG.get('map', {}).get('image_url', '')
     if url:
         asyncio.create_task(_fetch_map_url(url))
 
 
 async def _cleanup(app):
-    app['rcon'].cancel()
-    await asyncio.gather(app['rcon'], return_exceptions=True)
+    for key in ('rcon', 'cleanup'):
+        app[key].cancel()
+    await asyncio.gather(app['rcon'], app['cleanup'], return_exceptions=True)
+    await _http_session.close()
 
 
 def _build_ssl_ctx(ssl_cfg: dict):
@@ -3253,7 +3268,6 @@ def main():
     app.router.add_get('/api/cfg',                _handle_api_cfg)
     app.router.add_get('/api/worldcfg',           _handle_api_worldcfg)
     app.router.add_get('/api/about',              _handle_about)
-    app.router.add_get('/api/time',               _handle_time)
     app.router.add_get('/api/monuments',          _handle_monuments)
     app.router.add_get('/monuments',              _handle_monuments_public)
     app.router.add_get('/api/players',            _handle_players_api)
