@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.19.8'
+_APP_VERSION = '1.19.9'
 
 CONFIG = {}
 
@@ -218,9 +218,12 @@ html,body{{height:100%;font-family:'Consolas','Menlo','Monaco',monospace;backgro
 .logo-sub{{color:var(--dim);font-size:11px;margin-top:2px}}
 .servers{{margin-bottom:20px;border:1px solid var(--border);border-radius:6px;overflow:hidden}}
 .servers-hdr{{padding:7px 12px;font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.07em;background:var(--bg3);border-bottom:1px solid var(--border)}}
-.srv-row{{display:flex;align-items:center;gap:10px;padding:9px 12px}}
+.srv-row{{display:flex;align-items:center;gap:10px;padding:9px 12px;cursor:pointer;border-left:2px solid transparent;transition:background .12s,border-color .12s}}
 .srv-row+.srv-row{{border-top:1px solid var(--border)}}
+.srv-row:hover{{background:rgba(255,255,255,.04)}}
+.srv-row.sel{{background:rgba(205,66,20,.08);border-left-color:var(--accent)}}
 .srv-dot{{width:7px;height:7px;border-radius:50%;background:var(--dim);flex-shrink:0}}
+.srv-row.sel .srv-dot{{background:var(--accent)}}
 .srv-name{{font-size:12px;font-weight:bold;color:var(--text)}}
 .srv-addr{{font-size:10px;color:var(--dim);margin-top:1px}}
 .no-srv{{padding:10px 12px;font-size:12px;color:var(--dim)}}
@@ -246,10 +249,22 @@ input[type=password]:focus{{border-color:var(--accent)}}
       <label for="pw">Panel Password</label>
       <input id="pw" name="password" type="password" placeholder="&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;" autocomplete="current-password" autofocus>
     </div>
+    <input type="hidden" name="profile_id" id="pid">
     <button type="submit" id="signin">Sign In</button>
   </form>
   <div id="err">{error_msg}</div>
 </div>
+<script>
+var rows = document.querySelectorAll('.srv-row');
+rows.forEach(function(row) {{
+  row.addEventListener('click', function() {{
+    rows.forEach(function(r) {{ r.classList.remove('sel'); }});
+    row.classList.add('sel');
+    document.getElementById('pid').value = row.dataset.id;
+  }});
+  if (row.classList.contains('sel')) document.getElementById('pid').value = row.dataset.id;
+}});
+</script>
 </body>
 </html>"""
 
@@ -2633,13 +2648,16 @@ async def _auth(request, handler):
 def _login_servers_html() -> str:
     if not _profiles:
         return '<div class="servers"><div class="no-srv">No servers configured</div></div>'
+    last_id = CONFIG.get('web', {}).get('last_profile_id', '') or _profiles[0]['id']
     rows = ''
     for p in _profiles:
         name = _he(p.get('name') or p['host'])
         host = _he(p['host'])
         port = _he(str(p['port']))
+        pid  = _he(p['id'])
+        sel  = ' sel' if p['id'] == last_id else ''
         rows += (
-            '<div class="srv-row">'
+            f'<div class="srv-row{sel}" data-id="{pid}">'
             '<div class="srv-dot"></div>'
             '<div><div class="srv-name">' + name + '</div>'
             '<div class="srv-addr">' + host + ':' + port + '</div></div>'
@@ -2669,7 +2687,20 @@ async def _handle_login_post(req):
     given = data.get('password', '')
     expected = CONFIG.get('web', {}).get('password', '')
     if expected and _verify_web_pwd(given, expected):
+        global _rcon_cfg, _active_profile_id
         _login_attempts.pop(ip, None)
+        profile_id = data.get('profile_id', '').strip()
+        if profile_id and profile_id != _active_profile_id:
+            p = next((x for x in _profiles if x['id'] == profile_id), None)
+            if p:
+                _rcon_cfg = {'host': p['host'], 'port': p['port'], 'password': _decrypt_pwd(p['password'])}
+                _active_profile_id = profile_id
+                CONFIG.setdefault('web', {})['last_profile_id'] = profile_id
+                cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+                with open(cfg_path, 'w') as f:
+                    json.dump(CONFIG, f, indent=2)
+                if _rcon_restart:
+                    _rcon_restart.set()
         token = _new_session()
         resp = web.HTTPFound('/')
         resp.set_cookie('rcon_session', token, httponly=True, samesite='Lax', max_age=86400, path='/')
