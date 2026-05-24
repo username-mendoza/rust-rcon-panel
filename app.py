@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.8'
+_APP_VERSION = '1.20.9'
 
 CONFIG = {}
 
@@ -1141,7 +1141,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 
     <!-- Oxide tab -->
     <div class="panel" id="panel-oxide">
-      <input type="file" id="oxide-file-input" accept=".cs" style="display:none" onchange="oxideHandleFileSelect(this)">
+      <input type="file" id="oxide-file-input" accept=".cs,.zip" style="display:none" onchange="oxideHandleFileSelect(this)">
       <div id="oxide-toolbar">
         <button id="oxide-reload-all-btn" onclick="oxideReloadAll()">&#8635; Reload All</button>
         <button id="oxide-refresh-btn" onclick="loadOxideTab(true)">&#8635; Refresh</button>
@@ -2795,21 +2795,60 @@ function oxideUploadFile(slug) {
 async function oxideHandleFileSelect(input) {
   const file = input.files[0];
   if (!file) return;
-  if (!file.name.endsWith('.cs')) {
-    $('oxide-status-msg').textContent = 'Select a .cs file';
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (ext !== 'cs' && ext !== 'zip') {
+    $('oxide-status-msg').textContent = 'Select a .cs or .zip file';
     return;
   }
-  const slug = _oxideUploadTarget;
-  $('oxide-status-msg').textContent = 'Uploading ' + (slug || file.name) + '…';
+  const slug = _oxideUploadTarget || file.name.replace(/\.(cs|zip)$/i, '');
+  $('oxide-status-msg').textContent = 'Inspecting ' + file.name + '…';
   const fd = new FormData();
-  fd.append('slug', slug || file.name.replace(/\.cs$/i, ''));
+  fd.append('slug', slug);
   fd.append('file', file);
+  let plan;
   try {
-    const r = await fetch('/api/oxide/upload', {method: 'POST', body: fd});
-    const d = await r.json();
-    $('oxide-status-msg').textContent = d.result || (d.ok ? 'Uploaded!' : (d.error || 'Failed'));
-    if (d.ok) setTimeout(() => loadOxideTab(true), 2000);
-  } catch(e) { $('oxide-status-msg').textContent = 'Upload failed'; }
+    const r = await fetch('/api/oxide/inspect', {method: 'POST', body: fd});
+    plan = await r.json();
+  } catch(e) { $('oxide-status-msg').textContent = 'Inspect failed'; return; }
+  if (!plan.ok) { $('oxide-status-msg').textContent = plan.error || 'Inspect failed'; return; }
+  $('oxide-status-msg').textContent = '';
+  // Show confirmation modal
+  const overlay = document.createElement('div');
+  overlay.id = 'modal-overlay';
+  const fileRows = plan.files.map(f => {
+    const icon = f.type === 'plugin' ? '🔌' : '🌐';
+    const warn = f.warning ? ` <span style="color:var(--yellow);font-size:10px">(${esc(f.warning)})</span>` : '';
+    return `<div style="padding:3px 0;font-size:12px">${icon} <span style="color:var(--dim)">${esc(f.src)}</span> → <b>${esc(f.dest)}</b>${warn}</div>`;
+  }).join('');
+  const warnRows = plan.warnings.length
+    ? `<div style="margin-top:10px;font-size:11px;color:var(--yellow)">${plan.warnings.map(w=>'⚠ '+esc(w)).join('<br>')}</div>`
+    : '';
+  overlay.innerHTML = `<div id="modal-box" style="max-width:520px;width:90vw">
+    <h3>Install ${esc(plan.plugin_slug)}</h3>
+    <div style="margin-bottom:6px;font-size:11px;color:var(--dim)">${plan.files.length} file${plan.files.length!==1?'s':''} will be written:</div>
+    <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:8px 12px;max-height:200px;overflow-y:auto">${fileRows}</div>
+    ${warnRows}
+    <div class="modal-btns">
+      <button class="modal-btn ok" id="ox-install-ok">Install</button>
+      <button class="modal-btn secondary" id="ox-install-cancel">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  $('ox-install-cancel').onclick = () => { overlay.remove(); $('oxide-status-msg').textContent = 'Cancelled'; };
+  overlay.onclick = e => { if (e.target === overlay) { overlay.remove(); $('oxide-status-msg').textContent = 'Cancelled'; } };
+  $('ox-install-ok').onclick = async () => {
+    overlay.remove();
+    $('oxide-status-msg').textContent = 'Installing ' + plan.plugin_slug + '…';
+    const fd2 = new FormData();
+    fd2.append('slug', slug);
+    fd2.append('file', file);
+    try {
+      const r2 = await fetch('/api/oxide/upload', {method: 'POST', body: fd2});
+      const d = await r2.json();
+      $('oxide-status-msg').textContent = d.result || (d.ok ? 'Installed!' : (d.error || 'Failed'));
+      if (d.ok) setTimeout(() => loadOxideTab(true), 2000);
+    } catch(e) { $('oxide-status-msg').textContent = 'Install failed'; }
+  };
 }
 
 async function oxideReloadAll() {
@@ -3661,40 +3700,156 @@ async def _handle_oxide_update(req):
         return web.json_response({'ok': True, 'result': f'Downloaded OK — reload: {e}'})
 
 
-async def _handle_oxide_upload(req):
-    """Accept a multipart .cs file upload and install it as a plugin."""
-    try:
-        reader = await req.multipart()
-    except Exception:
-        return web.json_response({'ok': False, 'error': 'Expected multipart form'}, status=400)
-    slug    = None
-    content = None
+_LANG_CODE_RE = re.compile(r'^[a-z]{2}(?:-[A-Za-z]{2,4})?$')
+_OXIDE_LANG_DIR    = '/home/steam/rustserver/oxide/lang'
+
+def _inspect_upload(slug: str, filename: str, content: bytes) -> dict:
+    """
+    Inspect uploaded bytes (.cs or .zip) and return a plan dict:
+      { ok, error, files: [{src, dest, type}], warnings: [], plugin_slug }
+    No files are written.
+    """
+    import zipfile, io
+
+    is_zip = filename.lower().endswith('.zip') or content[:2] == b'PK'
+    is_cs  = filename.lower().endswith('.cs')
+
+    if not is_zip and not is_cs:
+        return {'ok': False, 'error': 'Only .cs or .zip files are accepted'}
+    if len(content) < 10:
+        return {'ok': False, 'error': 'File is empty'}
+
+    files    = []   # {src, dest, type}
+    warnings = []
+    cs_slugs = []
+
+    if is_cs:
+        if b'class ' not in content and b'namespace' not in content:
+            return {'ok': False, 'error': 'File does not look like a C# plugin'}
+        dest_slug = slug or re.sub(r'\.cs$', '', filename, flags=re.IGNORECASE)
+        if not re.match(r'^\w+$', dest_slug):
+            return {'ok': False, 'error': f'Invalid plugin name: {dest_slug!r}'}
+        files.append({'src': filename, 'dest': f'plugins/{dest_slug}.cs', 'type': 'plugin'})
+        cs_slugs.append(dest_slug)
+    else:
+        # ZIP
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(content))
+        except zipfile.BadZipFile:
+            return {'ok': False, 'error': 'File is not a valid ZIP archive'}
+
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            raw = info.filename
+            # Guard against path traversal
+            if '..' in raw or raw.startswith('/'):
+                return {'ok': False, 'error': f'Unsafe path in ZIP: {raw!r}'}
+
+            parts = raw.replace('\\', '/').split('/')
+            name  = parts[-1]
+            ext   = os.path.splitext(name)[1].lower()
+
+            if ext == '.cs':
+                entry_slug = re.sub(r'\.cs$', '', name, flags=re.IGNORECASE)
+                if not re.match(r'^\w+$', entry_slug):
+                    warnings.append(f'Skipped {raw!r}: invalid plugin name')
+                    continue
+                data = zf.read(info)
+                if b'class ' not in data and b'namespace' not in data:
+                    warnings.append(f'Skipped {raw!r}: does not look like a C# plugin')
+                    continue
+                files.append({'src': raw, 'dest': f'plugins/{entry_slug}.cs', 'type': 'plugin'})
+                cs_slugs.append(entry_slug)
+
+            elif ext == '.json':
+                # Detect lang code from parent folder, e.g. "en/Plugin.json" or "lang/en/Plugin.json"
+                lang_code = None
+                for part in reversed(parts[:-1]):
+                    if _LANG_CODE_RE.match(part):
+                        lang_code = part
+                        break
+                if lang_code:
+                    files.append({'src': raw, 'dest': f'lang/{lang_code}/{name}', 'type': 'lang'})
+                else:
+                    # JSON at root or unknown folder → default to en
+                    files.append({'src': raw, 'dest': f'lang/en/{name}', 'type': 'lang',
+                                  'warning': 'No language folder detected — placed in lang/en/'})
+                    warnings.append(f'{raw!r}: no language folder found, defaulting to lang/en/')
+            else:
+                warnings.append(f'Skipped {raw!r}: unsupported file type')
+
+    if not cs_slugs:
+        return {'ok': False, 'error': 'No valid .cs plugin file found'}
+    if len(cs_slugs) > 1:
+        return {'ok': False, 'error': f'ZIP contains multiple plugins: {cs_slugs} — install them separately'}
+
+    return {'ok': True, 'files': files, 'warnings': warnings, 'plugin_slug': cs_slugs[0]}
+
+
+async def _read_multipart_upload(req):
+    """Read multipart form, return (slug, filename, content) or raise."""
+    reader = await req.multipart()
+    slug = filename = content = None
     async for part in reader:
         if part.name == 'slug':
             slug = (await part.read()).decode('utf-8', errors='replace').strip()
         elif part.name == 'file':
-            content = await part.read()
-    if not slug or not re.match(r'^\w+$', slug):
-        return web.json_response({'ok': False, 'error': 'Invalid plugin name'}, status=400)
-    if not content or len(content) < 50:
-        return web.json_response({'ok': False, 'error': 'Empty or too-small file'}, status=400)
-    if b'class ' not in content and b'namespace' not in content:
-        return web.json_response({'ok': False, 'error': 'File does not look like a C# plugin'}, status=400)
-    plugin_path = f'/home/steam/rustserver/oxide/plugins/{slug}.cs'
-    tmp_path    = plugin_path + '.tmp'
+            filename = part.filename or ''
+            content  = await part.read()
+    return slug or '', filename or '', content or b''
+
+
+async def _handle_oxide_inspect(req):
+    """Inspect a .cs or .zip upload and return a placement plan without writing anything."""
     try:
-        def _write():
-            with open(tmp_path, 'wb') as f:
-                f.write(content)
-            os.replace(tmp_path, plugin_path)
-        await asyncio.to_thread(_write)
+        slug, filename, content = await _read_multipart_upload(req)
+    except Exception:
+        return web.json_response({'ok': False, 'error': 'Expected multipart form'}, status=400)
+    plan = await asyncio.to_thread(_inspect_upload, slug, filename, content)
+    return web.json_response(plan)
+
+
+async def _handle_oxide_upload(req):
+    """Install a .cs or .zip plugin upload after client confirmation."""
+    try:
+        slug, filename, content = await _read_multipart_upload(req)
+    except Exception:
+        return web.json_response({'ok': False, 'error': 'Expected multipart form'}, status=400)
+
+    plan = await asyncio.to_thread(_inspect_upload, slug, filename, content)
+    if not plan['ok']:
+        return web.json_response({'ok': False, 'error': plan['error']}, status=400)
+
+    import zipfile, io
+    is_zip = filename.lower().endswith('.zip') or content[:2] == b'PK'
+    zf = zipfile.ZipFile(io.BytesIO(content)) if is_zip else None
+
+    def _write_all():
+        for f in plan['files']:
+            if f['type'] == 'plugin':
+                dest = f'/home/steam/rustserver/oxide/plugins/{os.path.basename(f["dest"])}'
+            else:
+                lang_rel = f['dest']  # lang/{code}/{name}
+                dest = f'/home/steam/rustserver/oxide/{lang_rel}'
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+            tmp = dest + '.tmp'
+            data = zf.read(f['src']) if zf else content
+            with open(tmp, 'wb') as fh:
+                fh.write(data)
+            os.replace(tmp, dest)
+
+    try:
+        await asyncio.to_thread(_write_all)
     except Exception as e:
         return web.json_response({'ok': False, 'error': f'Write failed: {e}'}, status=500)
+
+    plugin_slug = plan['plugin_slug']
     try:
-        result = await _rcon_query(f'oxide.reload {slug}', timeout=15.0)
-        return web.json_response({'ok': True, 'result': result.strip()})
+        result = await _rcon_query(f'oxide.reload {plugin_slug}', timeout=15.0)
+        return web.json_response({'ok': True, 'result': result.strip(), 'warnings': plan['warnings']})
     except Exception as e:
-        return web.json_response({'ok': True, 'result': f'Saved OK — reload: {e}'})
+        return web.json_response({'ok': True, 'result': f'Saved OK — reload: {e}', 'warnings': plan['warnings']})
 
 
 async def _cleanup_loop():
@@ -3823,6 +3978,7 @@ def main():
     app.router.add_post('/api/oxide/action',      _handle_oxide_action)
     app.router.add_get('/api/oxide/updates',      _handle_oxide_updates)
     app.router.add_post('/api/oxide/update',      _handle_oxide_update)
+    app.router.add_post('/api/oxide/inspect',     _handle_oxide_inspect)
     app.router.add_post('/api/oxide/upload',      _handle_oxide_upload)
     app.router.add_get('/login',                  _handle_login_get)
     app.router.add_post('/login',                 _handle_login_post)
