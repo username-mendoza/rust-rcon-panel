@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.19.7'
+_APP_VERSION = '1.19.8'
 
 CONFIG = {}
 
@@ -1011,9 +1011,9 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
     <!-- Players tab -->
     <div class="panel" id="panel-players">
       <div id="pl-subtabs">
-        <div class="pl-stab active" id="pst-online"  onclick="switchPlSubtab('online')">Online<span class="pl-stab-badge" id="pst-online-badge" style="display:none"></span></div>
+        <div class="pl-stab active" id="pst-online"  onclick="switchPlSubtab('online')">Online</div>
         <div class="pl-stab"        id="pst-history" onclick="switchPlSubtab('history')">History</div>
-        <div class="pl-stab"        id="pst-banned"  onclick="switchPlSubtab('banned')">Banned<span class="pl-stab-badge" id="pst-banned-badge" style="display:none"></span></div>
+        <div class="pl-stab"        id="pst-banned"  onclick="switchPlSubtab('banned')">Banned</div>
       </div>
       <div id="pl-toolbar">
         <input id="pl-search" type="text" placeholder="Search players..." oninput="renderPlayersTable()">
@@ -1301,6 +1301,12 @@ function renderPlayers(players) {
   if ($('si-pl').textContent === '--') $('si-pl').textContent = players.length;
   livePlayers = {};
   for (const p of players) livePlayers[p.id] = p;
+  // Recalculate sleeping every playerlist update: location entries not in live list
+  $('si-sleeping').textContent = Object.keys(mapPlayers).filter(id => !livePlayers[id]).length;
+  // Keep Players tab badge current without requiring a tab visit
+  const badge = $('players-badge');
+  if (players.length > 0) { badge.textContent = players.length; badge.className = 'tbadge show'; }
+  else { badge.textContent = ''; badge.className = 'tbadge'; }
   if (activeTab === 'players' && playersData) renderPlayersTable();
   const list = $('player-list');
   list.innerHTML = '';
@@ -2120,9 +2126,6 @@ function renderPlayersTable() {
   const badge = $('players-badge');
   if (online > 0) { badge.textContent = online; badge.className = 'tbadge show'; }
   else { badge.textContent = ''; badge.className = 'tbadge'; }
-  const ob = $('pst-online-badge');
-  if (online > 0) { ob.textContent = online; ob.style.display = ''; }
-  else ob.style.display = 'none';
   $('pl-count').textContent = rows.length + ' player' + (rows.length !== 1 ? 's' : '') +
     (plSubtab === 'online' ? ' online' : '');
 
@@ -2210,14 +2213,10 @@ async function loadBannedTab(force) {
 
 function renderBannedTab() {
   const tbody = $('pl-banned-tbody');
-  const bb = $('pst-banned-badge');
   if (!bansData || !bansData.length) {
     tbody.innerHTML = '<tr><td colspan="4" class="pl-empty">No banned players.</td></tr>';
-    bb.style.display = 'none';
     return;
   }
-  bb.textContent = bansData.length;
-  bb.style.display = '';
   tbody.innerHTML = '';
   for (const b of bansData) {
     const knownName = (playersData || []).find(p => p.id === b.steamid)?.name || b.name || '';
