@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.6'
+_APP_VERSION = '1.20.7'
 
 CONFIG = {}
 
@@ -902,6 +902,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 #oxide-table td { padding: 5px 10px; border-bottom: 1px solid #22252d; vertical-align: middle; }
 #oxide-table tr:hover td { background: var(--bg2); }
 .ox-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+.ox-dot.unloaded { background: var(--dim); }
 .ox-act {
   background: none; border: 1px solid var(--border); color: var(--dim);
   font-family: inherit; font-size: 10px; padding: 2px 7px; border-radius: 3px;
@@ -2699,26 +2700,34 @@ async function loadOxideTab(force) {
 function renderOxideTab() {
   if (!oxideData) return;
   $('oxide-version').textContent = oxideData.oxide_version || '';
-  const n = (oxideData.plugins || []).length;
-  $('oxide-status-msg').textContent = n + ' plugin' + (n === 1 ? '' : 's');
+  const plugins = oxideData.plugins || [];
+  const loadedCount = plugins.filter(p => p.loaded !== false).length;
+  const totalCount  = plugins.length;
+  $('oxide-status-msg').textContent = loadedCount + ' loaded' + (totalCount > loadedCount ? ', ' + (totalCount - loadedCount) + ' unloaded' : '');
   const tb = $('oxide-tbody');
   tb.innerHTML = '';
-  for (const p of (oxideData.plugins || [])) {
+  for (const p of plugins) {
+    const loaded = p.loaded !== false;
     const upd = oxideUpdates[p.slug || p.name];
     const tr = document.createElement('tr');
     const slugSafe = (p.slug || p.name).replace(/'/g, "\\'");
 
-    let verHtml = esc(p.version);
+    let verHtml = esc(p.version || '—');
     if (upd) {
       if (upd.found && upd.latest && upd.latest !== p.version) {
         verHtml += `<span class="ox-upd-badge" title="Update available: ${esc(upd.latest)}">&#8593;${esc(upd.latest)}</span>`;
-      } else if (upd.found) {
+      } else if (upd.found && p.version) {
         verHtml += '<span class="ox-up-to-date" title="Up to date">&#10003;</span>';
       }
     }
-    let actHtml =
-      `<button class="ox-act" onclick="oxideReload('${slugSafe}')">Reload</button>` +
-      `<button class="ox-act unload" style="margin-left:4px" onclick="oxideUnload('${slugSafe}')">Unload</button>`;
+    let actHtml;
+    if (loaded) {
+      actHtml =
+        `<button class="ox-act" onclick="oxideReload('${slugSafe}')">Reload</button>` +
+        `<button class="ox-act unload" style="margin-left:4px" onclick="oxideUnload('${slugSafe}')">Unload</button>`;
+    } else {
+      actHtml = `<button class="ox-act" onclick="oxideLoad('${slugSafe}')">Load</button>`;
+    }
     if (upd && upd.found && upd.latest && upd.latest !== p.version) {
       if (upd.download_url) {
         const dlSafe = (upd.download_url||'').replace(/'/g,"\\'");
@@ -2727,8 +2736,9 @@ function renderOxideTab() {
         actHtml += `<a class="ox-act ext-link" href="${esc(upd.url)}" target="_blank" style="margin-left:4px" title="${esc(upd.marketplace||'Marketplace')}">&#8599; ${esc(upd.marketplace||'Update')}</a>`;
       }
     }
+    if (!loaded) tr.style.opacity = '0.55';
     tr.innerHTML =
-      `<td><span class="ox-dot"></span></td>` +
+      `<td><span class="ox-dot${loaded?'':' unloaded'}"></span></td>` +
       `<td>${esc(p.name)}</td>` +
       `<td>${verHtml}</td>` +
       `<td>${esc(p.author)}</td>` +
@@ -2760,8 +2770,16 @@ async function oxideUnload(name) {
   try {
     const d = await _oxidePost({action: 'unload', plugin: name});
     $('oxide-status-msg').textContent = d.result || (d.ok ? 'Unloaded' : (d.error || 'Failed'));
-    if (oxideData) oxideData.plugins = oxideData.plugins.filter(p => p.slug !== name && p.name !== name);
-    renderOxideTab();
+    setTimeout(() => loadOxideTab(true), 1500);
+  } catch(e) { $('oxide-status-msg').textContent = 'Request failed'; }
+}
+
+async function oxideLoad(name) {
+  $('oxide-status-msg').textContent = 'Loading ' + name + '…';
+  try {
+    const d = await _oxidePost({action: 'load', plugin: name});
+    $('oxide-status-msg').textContent = d.result || (d.ok ? 'Loaded' : (d.error || 'Failed'));
+    setTimeout(() => loadOxideTab(true), 1500);
   } catch(e) { $('oxide-status-msg').textContent = 'Request failed'; }
 }
 
@@ -3426,6 +3444,8 @@ async def _handle_connect(req):
     return web.json_response({'ok': True})
 
 
+_PLUGINS_DIR = '/home/steam/rustserver/oxide/plugins'
+
 async def _handle_oxide(req):
     if not _rcon_ok:
         return web.json_response({'error': 'RCON not connected'}, status=503)
@@ -3436,9 +3456,41 @@ async def _handle_oxide(req):
         )
     except Exception as e:
         return web.json_response({'error': str(e)}, status=503)
+
+    loaded = _parse_oxide_plugins(plugins_raw)
+    for p in loaded:
+        p['loaded'] = True
+    loaded_slugs = {p['slug'] for p in loaded}
+
+    uc_map = await asyncio.to_thread(_load_uc_map)
+
+    def _find_unloaded():
+        result = []
+        try:
+            for fname in sorted(os.listdir(_PLUGINS_DIR)):
+                if not fname.endswith('.cs'):
+                    continue
+                slug = fname[:-3]
+                if slug in loaded_slugs:
+                    continue
+                uc = uc_map.get(slug, {})
+                result.append({
+                    'name':        uc.get('name') or slug,
+                    'slug':        slug,
+                    'version':     uc.get('version', ''),
+                    'author':      uc.get('author', ''),
+                    'description': '',
+                    'loaded':      False,
+                })
+        except Exception:
+            pass
+        return result
+
+    unloaded = await asyncio.to_thread(_find_unloaded)
+
     return web.json_response({
         'oxide_version': _parse_oxide_version(ver_raw),
-        'plugins':       _parse_oxide_plugins(plugins_raw),
+        'plugins':       loaded + unloaded,
     })
 
 
@@ -3467,7 +3519,7 @@ async def _handle_oxide_action(req):
 _UC_CONFIG_PATH = '/home/steam/rustserver/oxide/config/UpdateChecker.json'
 
 def _load_uc_map() -> dict:
-    """Return {slugKey: {marketplace, url}} from UpdateChecker.json."""
+    """Return {slugKey: {marketplace, url, name, version, author}} from UpdateChecker.json."""
     try:
         with open(_UC_CONFIG_PATH) as f:
             data = json.load(f)
@@ -3477,6 +3529,9 @@ def _load_uc_map() -> dict:
             result[key] = {
                 'marketplace': p.get('Marketplace', ''),
                 'url':         p.get('Link to plugin', ''),
+                'name':        p.get('Name', ''),
+                'version':     p.get('Plugin version', ''),
+                'author':      p.get('Author', ''),
             }
         return result
     except Exception:
