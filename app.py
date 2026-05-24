@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.19.9'
+_APP_VERSION = '1.20.0'
 
 CONFIG = {}
 
@@ -47,6 +47,9 @@ _RE_STEAMID      = re.compile(r'^\d{17}$')
 _RE_BAN_SID      = re.compile(r'\b(\d{17})\b')
 _RE_BAN_IDX      = re.compile(r'^\d+[.):\s]+')
 _RE_WORLDCFG_VAL = re.compile(r'"(-?\d+)"')
+_RE_OX_PLUGIN    = re.compile(
+    r'^\d+\s+(.+?)\s+\(([^)]+)\)\s+by\s+(.+?)(?:\s+--\s+(.+))?$'
+)
 
 
 def _valid_port(port) -> bool:
@@ -58,6 +61,26 @@ def _valid_port(port) -> bool:
 
 def _valid_steamid(sid: str) -> bool:
     return bool(_RE_STEAMID.match(str(sid)))
+
+def _parse_oxide_version(raw: str) -> str:
+    m = re.search(r'(?:Oxide|uMod)\s+[\d.]+', raw, re.IGNORECASE)
+    return m.group(0) if m else raw.strip()
+
+def _parse_oxide_plugins(raw: str) -> list:
+    plugins = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or '[Oxide]' in line or '[uMod]' in line:
+            continue
+        m = _RE_OX_PLUGIN.match(line)
+        if m:
+            plugins.append({
+                'name':        m.group(1).strip(),
+                'version':     m.group(2).strip(),
+                'author':      m.group(3).strip(),
+                'description': (m.group(4) or '').strip(),
+            })
+    return plugins
 
 def _load_player_db():
     global _player_db
@@ -843,6 +866,41 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 }
 .about-footer a:hover { text-decoration: underline; }
 
+/* ── Oxide tab ─────────────────────────────────────────────────────────────── */
+#panel-oxide { display: flex; flex-direction: column; overflow: hidden; }
+#oxide-toolbar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap;
+}
+#oxide-toolbar button {
+  background: var(--bg2); border: 1px solid var(--border); color: var(--text);
+  font-family: inherit; font-size: 12px; padding: 4px 10px; border-radius: 4px;
+  cursor: pointer; transition: all .15s;
+}
+#oxide-toolbar button:hover { border-color: var(--accent); color: var(--accent); }
+#oxide-toolbar button:disabled { opacity: .4; cursor: default; }
+#oxide-version { font-size: 11px; color: var(--dim); margin-left: auto; }
+#oxide-status-msg { font-size: 11px; color: var(--dim); }
+#oxide-scroll { flex: 1; overflow-y: auto; }
+#oxide-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+#oxide-table th {
+  text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--border);
+  color: var(--dim); font-weight: 500; font-size: 11px; white-space: nowrap;
+  position: sticky; top: 0; background: var(--bg); z-index: 1;
+}
+#oxide-table td { padding: 5px 10px; border-bottom: 1px solid #22252d; vertical-align: middle; }
+#oxide-table tr:hover td { background: var(--bg2); }
+.ox-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+.ox-act {
+  background: none; border: 1px solid var(--border); color: var(--dim);
+  font-family: inherit; font-size: 10px; padding: 2px 7px; border-radius: 3px;
+  cursor: pointer; transition: all .15s; white-space: nowrap;
+}
+.ox-act:hover { border-color: var(--accent); color: var(--accent); }
+.ox-act.unload:hover { border-color: var(--red); color: var(--red); }
+.ox-upd-badge { font-size: 10px; color: var(--yellow); margin-left: 5px; }
+.ox-up-to-date { font-size: 10px; color: var(--green); margin-left: 5px; }
+
 /* switch server + logout buttons in header */
 #hdr-switch, #hdr-settings, #hdr-about, #hdr-logout {
   background: none; border: 1px solid var(--border); color: var(--dim);
@@ -972,6 +1030,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
       <div class="tab" id="t-chat" onclick="switchTab('chat')">Chat<span class="tbadge" id="chat-badge"></span></div>
       <div class="tab" id="t-map" onclick="switchTab('map')">Map</div>
       <div class="tab" id="t-players" onclick="switchTab('players')">Players<span class="tbadge" id="players-badge"></span></div>
+      <div class="tab" id="t-oxide" onclick="switchTab('oxide')">Oxide</div>
     </div>
 
     <!-- Console panel -->
@@ -1064,6 +1123,30 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
         </table>
       </div>
     </div>
+
+    <!-- Oxide tab -->
+    <div class="panel" id="panel-oxide">
+      <div id="oxide-toolbar">
+        <button id="oxide-reload-all-btn" onclick="oxideReloadAll()">&#8635; Reload All</button>
+        <button id="oxide-refresh-btn" onclick="loadOxideTab(true)">&#8635; Refresh</button>
+        <button id="oxide-updates-btn" onclick="oxideCheckUpdates()">&#8593; Check Updates</button>
+        <span id="oxide-status-msg"></span>
+        <span id="oxide-version"></span>
+      </div>
+      <div id="oxide-scroll">
+        <table id="oxide-table">
+          <thead><tr>
+            <th style="width:14px"></th>
+            <th>Plugin</th>
+            <th>Version</th>
+            <th>Author</th>
+            <th>Description</th>
+            <th style="min-width:130px"></th>
+          </tr></thead>
+          <tbody id="oxide-tbody"></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <!-- Sidebar -->
@@ -1147,7 +1230,7 @@ function toggleAscroll() {
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
-const TABS = ['console', 'chat', 'map', 'players'];
+const TABS = ['console', 'chat', 'map', 'players', 'oxide'];
 
 function switchTab(name) {
   activeTab = name;
@@ -1168,6 +1251,7 @@ function switchTab(name) {
     // ResizeObserver fires automatically when panel becomes visible, triggering drawMap()
   }
   if (name === 'players') { if (plSubtab === 'banned') loadBannedTab(); else loadPlayersTab(); }
+  if (name === 'oxide') loadOxideTab();
 }
 
 // ── Logging ────────────────────────────────────────────────────────────────
@@ -2575,6 +2659,120 @@ function settingsMsg(msg, type) {
   el.style.color = type === 'err' ? 'var(--red)' : type === 'ok' ? 'var(--green)' : 'var(--dim)';
 }
 
+// ── Oxide tab ──────────────────────────────────────────────────────────────
+let oxideData = null, oxideCache = 0, oxideUpdates = {};
+
+async function loadOxideTab(force) {
+  const now = Date.now();
+  if (!force && oxideData && now - oxideCache < 30000) { renderOxideTab(); return; }
+  $('oxide-status-msg').textContent = 'Loading…';
+  $('oxide-version').textContent = '';
+  try {
+    const r = await fetch('/api/oxide');
+    if (r.status === 401) { window.location.href = '/login'; return; }
+    if (!r.ok) { $('oxide-status-msg').textContent = 'Error ' + r.status; return; }
+    oxideData = await r.json();
+    oxideCache = now;
+    oxideUpdates = {};
+    renderOxideTab();
+  } catch(e) { $('oxide-status-msg').textContent = 'Request failed'; }
+}
+
+function renderOxideTab() {
+  if (!oxideData) return;
+  $('oxide-version').textContent = oxideData.oxide_version || '';
+  const n = (oxideData.plugins || []).length;
+  $('oxide-status-msg').textContent = n + ' plugin' + (n === 1 ? '' : 's');
+  const tb = $('oxide-tbody');
+  tb.innerHTML = '';
+  for (const p of (oxideData.plugins || [])) {
+    const upd = oxideUpdates[p.name];
+    const tr = document.createElement('tr');
+    const nameSafe = p.name.replace(/'/g, "\\'");
+
+    let verHtml = esc(p.version);
+    if (upd) {
+      if (upd.found && upd.latest && upd.latest !== p.version) {
+        verHtml += `<span class="ox-upd-badge" title="Update available: ${esc(upd.latest)}">&#8593;${esc(upd.latest)}</span>`;
+      } else if (upd.found) {
+        verHtml += '<span class="ox-up-to-date" title="Up to date">&#10003;</span>';
+      }
+    }
+    tr.innerHTML =
+      `<td><span class="ox-dot"></span></td>` +
+      `<td>${esc(p.name)}</td>` +
+      `<td>${verHtml}</td>` +
+      `<td>${esc(p.author)}</td>` +
+      `<td style="color:var(--dim);font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.description)}</td>` +
+      `<td style="white-space:nowrap">` +
+        `<button class="ox-act" onclick="oxideReload('${nameSafe}')">Reload</button>` +
+        `<button class="ox-act unload" style="margin-left:4px" onclick="oxideUnload('${nameSafe}')">Unload</button>` +
+      `</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+async function _oxidePost(body) {
+  const r = await fetch('/api/oxide/action', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  return r.json();
+}
+
+async function oxideReload(name) {
+  $('oxide-status-msg').textContent = 'Reloading ' + name + '…';
+  try {
+    const d = await _oxidePost({action: 'reload', plugin: name});
+    $('oxide-status-msg').textContent = d.result || (d.ok ? 'Reloaded' : (d.error || 'Failed'));
+    setTimeout(() => loadOxideTab(true), 1500);
+  } catch(e) { $('oxide-status-msg').textContent = 'Request failed'; }
+}
+
+async function oxideUnload(name) {
+  $('oxide-status-msg').textContent = 'Unloading ' + name + '…';
+  try {
+    const d = await _oxidePost({action: 'unload', plugin: name});
+    $('oxide-status-msg').textContent = d.result || (d.ok ? 'Unloaded' : (d.error || 'Failed'));
+    if (oxideData) oxideData.plugins = oxideData.plugins.filter(p => p.name !== name);
+    renderOxideTab();
+  } catch(e) { $('oxide-status-msg').textContent = 'Request failed'; }
+}
+
+async function oxideReloadAll() {
+  $('oxide-status-msg').textContent = 'Reloading all plugins…';
+  const btn = $('oxide-reload-all-btn');
+  btn.disabled = true;
+  try {
+    const d = await _oxidePost({action: 'reload', plugin: '*'});
+    $('oxide-status-msg').textContent = d.result || (d.ok ? 'All reloaded' : (d.error || 'Failed'));
+    setTimeout(() => loadOxideTab(true), 2500);
+  } catch(e) { $('oxide-status-msg').textContent = 'Request failed'; }
+  finally { btn.disabled = false; }
+}
+
+async function oxideCheckUpdates() {
+  if (!oxideData || !oxideData.plugins.length) return;
+  const btn = $('oxide-updates-btn');
+  btn.disabled = true;
+  $('oxide-status-msg').textContent = 'Checking updates…';
+  try {
+    const names = oxideData.plugins.map(p => p.name).join(',');
+    const r = await fetch('/api/oxide/updates?plugins=' + encodeURIComponent(names));
+    if (!r.ok) { $('oxide-status-msg').textContent = 'Update check failed'; return; }
+    oxideUpdates = await r.json();
+    const outdated = oxideData.plugins.filter(p => {
+      const u = oxideUpdates[p.name];
+      return u && u.found && u.latest && u.latest !== p.version;
+    }).length;
+    renderOxideTab();
+    $('oxide-status-msg').textContent = outdated
+      ? outdated + ' update' + (outdated > 1 ? 's' : '') + ' available'
+      : 'All plugins up to date';
+  } catch(e) { $('oxide-status-msg').textContent = 'Update check failed'; }
+  finally { btn.disabled = false; }
+}
+
 // ── WebSocket connection ───────────────────────────────────────────────────
 async function checkAuthAndRedirect() {
   try {
@@ -3188,6 +3386,66 @@ async def _handle_connect(req):
     return web.json_response({'ok': True})
 
 
+async def _handle_oxide(req):
+    if not _rcon_ok:
+        return web.json_response({'error': 'RCON not connected'}, status=503)
+    try:
+        ver_raw, plugins_raw = await asyncio.gather(
+            _rcon_query('oxide.version', timeout=8.0),
+            _rcon_query('oxide.plugins', timeout=8.0),
+        )
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=503)
+    return web.json_response({
+        'oxide_version': _parse_oxide_version(ver_raw),
+        'plugins':       _parse_oxide_plugins(plugins_raw),
+    })
+
+
+async def _handle_oxide_action(req):
+    try:
+        d = await req.json()
+    except Exception:
+        return web.json_response({'ok': False, 'error': 'Invalid JSON'}, status=400)
+    action = (d.get('action') or '').strip().lower()
+    plugin = (d.get('plugin') or '').strip()
+    if action not in ('reload', 'unload', 'load'):
+        return web.json_response({'ok': False, 'error': 'action must be reload/unload/load'}, status=400)
+    if not plugin:
+        return web.json_response({'ok': False, 'error': 'plugin required'}, status=400)
+    # Allow '*' only for reload
+    if plugin == '*' and action != 'reload':
+        return web.json_response({'ok': False, 'error': 'wildcard only allowed for reload'}, status=400)
+    cmd = f'oxide.{action} {plugin}'
+    try:
+        result = await _rcon_query(cmd, timeout=15.0)
+        return web.json_response({'ok': True, 'result': result.strip()})
+    except Exception as e:
+        return web.json_response({'ok': False, 'error': str(e)}, status=503)
+
+
+async def _handle_oxide_updates(req):
+    names_param = req.rel_url.query.get('plugins', '')
+    if not names_param:
+        return web.json_response({})
+    names = [n.strip() for n in names_param.split(',') if n.strip()][:30]
+
+    async def _check_one(name):
+        url = f'https://umod.org/plugins/{name}.json'
+        try:
+            async with _http_session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    latest = data.get('latest_release_version', '')
+                    return name, {'found': True, 'latest': latest}
+        except Exception:
+            pass
+        return name, {'found': False, 'latest': ''}
+
+    results = await asyncio.gather(*[_check_one(n) for n in names])
+    return web.json_response(dict(results))
+
+
 async def _cleanup_loop():
     while True:
         await asyncio.sleep(300)
@@ -3310,6 +3568,9 @@ def main():
     app.router.add_get('/api/ping',               _handle_ping)
     app.router.add_get('/api/bans',               _handle_bans)
     app.router.add_post('/api/unban',             _handle_unban)
+    app.router.add_get('/api/oxide',              _handle_oxide)
+    app.router.add_post('/api/oxide/action',      _handle_oxide_action)
+    app.router.add_get('/api/oxide/updates',      _handle_oxide_updates)
     app.router.add_get('/login',                  _handle_login_get)
     app.router.add_post('/login',                 _handle_login_post)
     app.router.add_get('/logout',                 _handle_logout)
