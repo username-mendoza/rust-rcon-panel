@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.10'
+_APP_VERSION = '1.20.11'
 
 CONFIG = {}
 
@@ -2824,7 +2824,7 @@ async function oxideHandleFileSelect(input) {
     ? `<div style="margin-top:10px;font-size:11px;color:var(--yellow)">${plan.warnings.map(w=>'⚠ '+esc(w)).join('<br>')}</div>`
     : '';
   overlay.innerHTML = `<div id="modal-box" style="max-width:520px;width:90vw">
-    <h3>Install ${esc(plan.plugin_slug)}</h3>
+    <h3>Install ${(plan.plugin_slugs||[plan.plugin_slug]).map(s=>esc(s)).join(' + ')}</h3>
     <div style="margin-bottom:6px;font-size:11px;color:var(--dim)">${plan.files.length} file${plan.files.length!==1?'s':''} will be written:</div>
     <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:8px 12px;max-height:200px;overflow-y:auto">${fileRows}</div>
     ${warnRows}
@@ -2838,7 +2838,7 @@ async function oxideHandleFileSelect(input) {
   overlay.onclick = e => { if (e.target === overlay) { overlay.remove(); $('oxide-status-msg').textContent = 'Cancelled'; } };
   $('ox-install-ok').onclick = async () => {
     overlay.remove();
-    $('oxide-status-msg').textContent = 'Installing ' + plan.plugin_slug + '…';
+    $('oxide-status-msg').textContent = 'Installing ' + (plan.plugin_slugs||[plan.plugin_slug]).join(', ') + '…';
     const fd2 = new FormData();
     fd2.append('slug', slug);
     fd2.append('file', file);
@@ -3781,10 +3781,8 @@ def _inspect_upload(slug: str, filename: str, content: bytes) -> dict:
 
     if not cs_slugs:
         return {'ok': False, 'error': 'No valid .cs plugin file found'}
-    if len(cs_slugs) > 1:
-        return {'ok': False, 'error': f'ZIP contains multiple plugins: {cs_slugs} — install them separately'}
 
-    return {'ok': True, 'files': files, 'warnings': warnings, 'plugin_slug': cs_slugs[0]}
+    return {'ok': True, 'files': files, 'warnings': warnings, 'plugin_slug': cs_slugs[0], 'plugin_slugs': cs_slugs}
 
 
 async def _read_multipart_upload(req):
@@ -3844,12 +3842,14 @@ async def _handle_oxide_upload(req):
     except Exception as e:
         return web.json_response({'ok': False, 'error': f'Write failed: {e}'}, status=500)
 
-    plugin_slug = plan['plugin_slug']
-    try:
-        result = await _rcon_query(f'oxide.reload {plugin_slug}', timeout=15.0)
-        return web.json_response({'ok': True, 'result': result.strip(), 'warnings': plan['warnings']})
-    except Exception as e:
-        return web.json_response({'ok': True, 'result': f'Saved OK — reload: {e}', 'warnings': plan['warnings']})
+    reload_results = []
+    for slug in plan.get('plugin_slugs', [plan['plugin_slug']]):
+        try:
+            r = await _rcon_query(f'oxide.reload {slug}', timeout=15.0)
+            reload_results.append(r.strip())
+        except Exception as e:
+            reload_results.append(f'{slug}: reload error — {e}')
+    return web.json_response({'ok': True, 'result': ' | '.join(reload_results), 'warnings': plan['warnings']})
 
 
 async def _cleanup_loop():
