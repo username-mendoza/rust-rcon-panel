@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.12'
+_APP_VERSION = '1.20.13'
 
 CONFIG = {}
 
@@ -2683,6 +2683,17 @@ function settingsMsg(msg, type) {
 // ── Oxide tab ──────────────────────────────────────────────────────────────
 let oxideData = null, oxideCache = 0, oxideUpdates = {};
 
+function versionGt(a, b) {
+  const ap = (a||'').split('.').map(s=>parseInt(s,10)||0);
+  const bp = (b||'').split('.').map(s=>parseInt(s,10)||0);
+  for (let i = 0; i < Math.max(ap.length, bp.length); i++) {
+    const d = (ap[i]||0) - (bp[i]||0);
+    if (d > 0) return true;
+    if (d < 0) return false;
+  }
+  return false;
+}
+
 async function loadOxideTab(force) {
   const now = Date.now();
   if (!force && oxideData && now - oxideCache < 30000) { renderOxideTab(); return; }
@@ -2715,7 +2726,7 @@ function renderOxideTab() {
 
     let verHtml = esc(p.version || '—');
     if (upd) {
-      if (upd.found && upd.latest && upd.latest !== p.version) {
+      if (upd.found && upd.latest && versionGt(upd.latest, p.version)) {
         verHtml += `<span class="ox-upd-badge" title="Update available: ${esc(upd.latest)}">&#8593;${esc(upd.latest)}</span>`;
       } else if (upd.found && p.version) {
         verHtml += '<span class="ox-up-to-date" title="Up to date">&#10003;</span>';
@@ -2729,7 +2740,7 @@ function renderOxideTab() {
     } else {
       actHtml = `<button class="ox-act" onclick="oxideLoad('${slugSafe}')">Load</button>`;
     }
-    if (upd && upd.found && upd.latest && upd.latest !== p.version) {
+    if (upd && upd.found && upd.latest && versionGt(upd.latest, p.version)) {
       if (upd.download_url) {
         const dlSafe = (upd.download_url||'').replace(/'/g,"\\'");
         actHtml += `<button class="ox-act update" style="margin-left:4px" onclick="oxideUpdate('${slugSafe}','${dlSafe}')">&#8593; Update</button>`;
