@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.11'
+_APP_VERSION = '1.20.12'
 
 CONFIG = {}
 
@@ -2823,19 +2823,26 @@ async function oxideHandleFileSelect(input) {
   const warnRows = plan.warnings.length
     ? `<div style="margin-top:10px;font-size:11px;color:var(--yellow)">${plan.warnings.map(w=>'⚠ '+esc(w)).join('<br>')}</div>`
     : '';
-  overlay.innerHTML = `<div id="modal-box" style="max-width:520px;width:90vw">
-    <h3>Install ${(plan.plugin_slugs||[plan.plugin_slug]).map(s=>esc(s)).join(' + ')}</h3>
-    <div style="margin-bottom:6px;font-size:11px;color:var(--dim)">${plan.files.length} file${plan.files.length!==1?'s':''} will be written:</div>
-    <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:8px 12px;max-height:200px;overflow-y:auto">${fileRows}</div>
-    ${warnRows}
-    <div class="modal-btns">
+  const closeInstall = () => { overlay.remove(); $('oxide-status-msg').textContent = 'Cancelled'; };
+  overlay.innerHTML = `<div id="modal-box" style="max-width:520px;width:90vw;max-height:85vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-shrink:0">
+      <h3 style="margin:0">Install ${(plan.plugin_slugs||[plan.plugin_slug]).map(s=>esc(s)).join(' + ')}</h3>
+      <button id="ox-install-x" style="background:none;border:none;color:var(--dim);font-size:18px;cursor:pointer;padding:0 4px;line-height:1" title="Cancel">&times;</button>
+    </div>
+    <div style="overflow-y:auto;flex:1;min-height:0">
+      <div style="margin-bottom:6px;font-size:11px;color:var(--dim)">${plan.files.length} file${plan.files.length!==1?'s':''} will be written:</div>
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:8px 12px">${fileRows}</div>
+      ${warnRows}
+    </div>
+    <div class="modal-btns" style="flex-shrink:0;margin-top:14px">
       <button class="modal-btn ok" id="ox-install-ok">Install</button>
       <button class="modal-btn secondary" id="ox-install-cancel">Cancel</button>
     </div>
   </div>`;
   document.body.appendChild(overlay);
-  $('ox-install-cancel').onclick = () => { overlay.remove(); $('oxide-status-msg').textContent = 'Cancelled'; };
-  overlay.onclick = e => { if (e.target === overlay) { overlay.remove(); $('oxide-status-msg').textContent = 'Cancelled'; } };
+  $('ox-install-x').onclick = closeInstall;
+  $('ox-install-cancel').onclick = closeInstall;
+  overlay.onclick = e => { if (e.target === overlay) closeInstall(); };
   $('ox-install-ok').onclick = async () => {
     overlay.remove();
     $('oxide-status-msg').textContent = 'Installing ' + (plan.plugin_slugs||[plan.plugin_slug]).join(', ') + '…';
@@ -3777,12 +3784,19 @@ def _inspect_upload(slug: str, filename: str, content: bytes) -> dict:
                                   'warning': 'No language folder detected — placed in lang/en/'})
                     warnings.append(f'{raw!r}: no language folder found, defaulting to lang/en/')
             else:
-                warnings.append(f'Skipped {raw!r}: unsupported file type')
+                warnings.append(f'__skip__{ext or "(no ext)"}')  # aggregated below
 
     if not cs_slugs:
         return {'ok': False, 'error': 'No valid .cs plugin file found'}
 
-    return {'ok': True, 'files': files, 'warnings': warnings, 'plugin_slug': cs_slugs[0], 'plugin_slugs': cs_slugs}
+    # Aggregate skip warnings by extension instead of listing every file
+    from collections import Counter
+    skip_counts = Counter(w[8:] for w in warnings if w.startswith('__skip__'))
+    real_warnings = [w for w in warnings if not w.startswith('__skip__')]
+    for ext, count in sorted(skip_counts.items()):
+        real_warnings.append(f'Skipped {count} {ext} file{"s" if count > 1 else ""} (not supported)')
+
+    return {'ok': True, 'files': files, 'warnings': real_warnings, 'plugin_slug': cs_slugs[0], 'plugin_slugs': cs_slugs}
 
 
 async def _read_multipart_upload(req):
