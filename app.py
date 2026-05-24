@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.1'
+_APP_VERSION = '1.20.2'
 
 CONFIG = {}
 
@@ -63,8 +63,12 @@ def _valid_steamid(sid: str) -> bool:
     return bool(_RE_STEAMID.match(str(sid)))
 
 def _parse_oxide_version(raw: str) -> str:
+    # "Oxide.Rust Version: 2.0.7338\nOxide.Rust Branch: master"
+    m = re.search(r'Version:\s*([\d.]+)', raw, re.IGNORECASE)
+    if m:
+        return 'Oxide ' + m.group(1)
     m = re.search(r'(?:Oxide|uMod)\s+[\d.]+', raw, re.IGNORECASE)
-    return m.group(0) if m else raw.strip()
+    return m.group(0) if m else raw.split('\n')[0].strip()
 
 def _parse_oxide_plugins(raw: str) -> list:
     plugins = []
@@ -74,10 +78,18 @@ def _parse_oxide_plugins(raw: str) -> list:
             continue
         m = _RE_OX_PLUGIN.match(line)
         if m:
+            raw_author = m.group(3).strip()
+            # ".cs" filename at end of author field is the uMod lookup key
+            m_cs = re.search(r'-\s+(\w+)\.cs$', raw_author)
+            slug = m_cs.group(1) if m_cs else ''
+            # Strip load stats like "(0.01s / 24 KB) - Plugin.cs"
+            author = re.sub(r'\s+\([\d.].*$', '', raw_author)
+            name = m.group(1).strip().strip('"')
             plugins.append({
-                'name':        m.group(1).strip(),
+                'name':        name,
+                'slug':        slug or re.sub(r'\s+', '', name),
                 'version':     m.group(2).strip(),
-                'author':      m.group(3).strip(),
+                'author':      author,
                 'description': (m.group(4) or '').strip(),
             })
     return plugins
@@ -2686,7 +2698,7 @@ function renderOxideTab() {
   const tb = $('oxide-tbody');
   tb.innerHTML = '';
   for (const p of (oxideData.plugins || [])) {
-    const upd = oxideUpdates[p.name];
+    const upd = oxideUpdates[p.slug || p.name];
     const tr = document.createElement('tr');
     const nameSafe = p.name.replace(/'/g, "\\'");
 
@@ -2757,12 +2769,12 @@ async function oxideCheckUpdates() {
   btn.disabled = true;
   $('oxide-status-msg').textContent = 'Checking updates…';
   try {
-    const names = oxideData.plugins.map(p => p.name).join(',');
-    const r = await fetch('/api/oxide/updates?plugins=' + encodeURIComponent(names));
+    const slugs = oxideData.plugins.map(p => p.slug || p.name.replace(/\s+/g, '')).filter(Boolean).join(',');
+    const r = await fetch('/api/oxide/updates?plugins=' + encodeURIComponent(slugs));
     if (!r.ok) { $('oxide-status-msg').textContent = 'Update check failed'; return; }
     oxideUpdates = await r.json();
     const outdated = oxideData.plugins.filter(p => {
-      const u = oxideUpdates[p.name];
+      const u = oxideUpdates[p.slug || p.name];
       return u && u.found && u.latest && u.latest !== p.version;
     }).length;
     renderOxideTab();
