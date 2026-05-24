@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.0'
+_APP_VERSION = '1.20.1'
 
 CONFIG = {}
 
@@ -494,8 +494,8 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
   background: var(--bg3); border: 1px solid var(--border);
   padding: 1px 7px; border-radius: 10px; font-size: 11px; color: var(--text); font-weight: normal;
 }
-#qcmd-wrap { flex-shrink: 0; }
-#sidebar.map-mode #qcmd-wrap { display: none; }
+#qcmd-wrap { flex-shrink: 0; display: none; }
+#sidebar.cmd-mode #qcmd-wrap { display: block; }
 #quickcmds { padding: 8px; display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--border); }
 .qcmd {
   background: var(--bg3); border: 1px solid var(--border); color: var(--dim);
@@ -867,7 +867,6 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 .about-footer a:hover { text-decoration: underline; }
 
 /* ── Oxide tab ─────────────────────────────────────────────────────────────── */
-#panel-oxide { display: flex; flex-direction: column; overflow: hidden; }
 #oxide-toolbar {
   display: flex; align-items: center; gap: 8px; padding: 8px 10px;
   border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap;
@@ -1150,7 +1149,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
   </div>
 
   <!-- Sidebar -->
-  <div id="sidebar">
+  <div id="sidebar" class="cmd-mode">
     <div id="qcmd-wrap">
       <div class="sb-hdr">Quick Commands</div>
       <div id="quickcmds">
@@ -1245,6 +1244,7 @@ function switchTab(name) {
     chatL.scrollTop = chatL.scrollHeight;
   }
   $('sidebar').classList.toggle('map-mode', name === 'map');
+  $('sidebar').classList.toggle('cmd-mode', name === 'console' || name === 'chat');
   if (name === 'map') {
     initMapIfNeeded();
     if (rconOk && Object.keys(mapPlayers).length === 0) refreshMap();
