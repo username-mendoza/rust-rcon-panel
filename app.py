@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.3'
+_APP_VERSION = '1.20.4'
 
 CONFIG = {}
 
@@ -2703,7 +2703,7 @@ function renderOxideTab() {
   for (const p of (oxideData.plugins || [])) {
     const upd = oxideUpdates[p.slug || p.name];
     const tr = document.createElement('tr');
-    const nameSafe = p.name.replace(/'/g, "\\'");
+    const slugSafe = (p.slug || p.name).replace(/'/g, "\\'");
 
     let verHtml = esc(p.version);
     if (upd) {
@@ -2714,12 +2714,12 @@ function renderOxideTab() {
       }
     }
     let actHtml =
-      `<button class="ox-act" onclick="oxideReload('${nameSafe}')">Reload</button>` +
-      `<button class="ox-act unload" style="margin-left:4px" onclick="oxideUnload('${nameSafe}')">Unload</button>`;
+      `<button class="ox-act" onclick="oxideReload('${slugSafe}')">Reload</button>` +
+      `<button class="ox-act unload" style="margin-left:4px" onclick="oxideUnload('${slugSafe}')">Unload</button>`;
     if (upd && upd.found && upd.latest && upd.latest !== p.version) {
       if (upd.download_url) {
         const dlSafe = (upd.download_url||'').replace(/'/g,"\\'");
-        actHtml += `<button class="ox-act update" style="margin-left:4px" onclick="oxideUpdate('${nameSafe}','${dlSafe}')">&#8593; Update</button>`;
+        actHtml += `<button class="ox-act update" style="margin-left:4px" onclick="oxideUpdate('${slugSafe}','${dlSafe}')">&#8593; Update</button>`;
       } else if (upd.url) {
         actHtml += `<a class="ox-act ext-link" href="${esc(upd.url)}" target="_blank" style="margin-left:4px" title="${esc(upd.marketplace||'Marketplace')}">&#8599; ${esc(upd.marketplace||'Update')}</a>`;
       }
@@ -2757,7 +2757,7 @@ async function oxideUnload(name) {
   try {
     const d = await _oxidePost({action: 'unload', plugin: name});
     $('oxide-status-msg').textContent = d.result || (d.ok ? 'Unloaded' : (d.error || 'Failed'));
-    if (oxideData) oxideData.plugins = oxideData.plugins.filter(p => p.name !== name);
+    if (oxideData) oxideData.plugins = oxideData.plugins.filter(p => p.slug !== name && p.name !== name);
     renderOxideTab();
   } catch(e) { $('oxide-status-msg').textContent = 'Request failed'; }
 }
@@ -3489,69 +3489,44 @@ async def _handle_oxide_updates(req):
     sem = asyncio.Semaphore(6)
     hdrs = {'User-Agent': f'RconPanel/{_APP_VERSION}'}
 
-    async def _check_umod(slug, page_url):
-        umod_slug = page_url.rstrip('/').split('/')[-1]
-        api_url = f'https://umod.org/plugins/{umod_slug}.json'
-        async with _http_session.get(api_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-            if resp.status != 200:
-                return None
-            d = await resp.json(content_type=None)
-            return {
-                'found':        True,
-                'latest':       d.get('latest_release_version', ''),
-                'marketplace':  'uMod',
-                'url':          page_url,
-                'download_url': d.get('download_url', ''),
-            }
-
-    async def _check_sa(slug, known_url):
-        sa_url = f'https://serverarmour.com/api/v3/marketplace/search?plugin={slug}'
-        async with _http_session.get(sa_url, timeout=aiohttp.ClientTimeout(total=10), headers=hdrs) as resp:
-            if resp.status != 200:
-                return None
-            d = await resp.json(content_type=None)
-            if d.get('status') != 200 or not d.get('data'):
-                return None
-            slug_lower = slug.lower()
-            best = None
-            for item in d['data']:
-                item_url = (item.get('url') or '').lower()
-                # Prefer URL match from UpdateChecker config
-                if known_url and (known_url.lower() in item_url or item_url in known_url.lower()):
-                    best = item
-                    break
-            if not best:
-                for item in d['data']:
-                    item_slug = (item.get('slug') or '').lower().replace('-', '')
-                    item_name = (item.get('name') or '').lower().replace(' ', '')
-                    if item_slug == slug_lower or item_name == slug_lower:
-                        best = item
-                        break
-            if not best:
-                return None
-            return {
-                'found':        True,
-                'latest':       best.get('latestVersion', ''),
-                'marketplace':  best.get('marketplace', ''),
-                'url':          best.get('url', ''),
-                'download_url': '',
-            }
-
     async def _check_one(slug):
         async with sem:
-            info = uc_map.get(slug, {})
-            marketplace = info.get('marketplace', '')
-            page_url    = info.get('url', '')
+            info     = uc_map.get(slug, {})
+            page_url = info.get('url', '')
+            # Query ServerArmour: use known page URL when available (exact match),
+            # otherwise search by slug name — same strategy as UpdateChecker plugin.
+            query    = page_url if page_url else slug
+            sa_url   = f'https://serverarmour.com/api/v3/marketplace/search?plugin={query}'
             try:
-                if marketplace == 'uMod' and page_url:
-                    result = await _check_umod(slug, page_url)
+                async with _http_session.get(sa_url, timeout=aiohttp.ClientTimeout(total=12), headers=hdrs) as resp:
+                    if resp.status != 200:
+                        return slug, {'found': False, 'latest': '', 'marketplace': '', 'url': page_url, 'download_url': ''}
+                    d = await resp.json(content_type=None)
+                if d.get('status') != 200 or not d.get('data'):
+                    return slug, {'found': False, 'latest': '', 'marketplace': '', 'url': page_url, 'download_url': ''}
+                items = d['data']
+                # When querying by URL the first result is always the right plugin.
+                # When querying by name, find exact slug/name match.
+                if page_url:
+                    best = items[0]
                 else:
-                    result = await _check_sa(slug, page_url)
-                if result:
-                    return slug, result
+                    sl = slug.lower()
+                    best = next(
+                        (x for x in items
+                         if (x.get('slug') or '').lower().replace('-','') == sl
+                         or (x.get('name') or '').lower().replace(' ','') == sl),
+                        None
+                    )
+                if not best:
+                    return slug, {'found': False, 'latest': '', 'marketplace': '', 'url': page_url, 'download_url': ''}
+                mp  = best.get('marketplace', '')
+                url = best.get('url', '') or page_url
+                # For uMod plugins the download URL is simply {slug}.cs
+                dl  = f'https://umod.org/plugins/{slug}.cs' if mp == 'uMod' else ''
+                return slug, {'found': True, 'latest': best.get('latestVersion', ''),
+                               'marketplace': mp, 'url': url, 'download_url': dl}
             except Exception:
-                pass
-            return slug, {'found': False, 'latest': '', 'marketplace': marketplace, 'url': page_url, 'download_url': ''}
+                return slug, {'found': False, 'latest': '', 'marketplace': '', 'url': page_url, 'download_url': ''}
 
     results = await asyncio.gather(*[_check_one(s) for s in slugs])
     return web.json_response(dict(results))
