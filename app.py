@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.19'
+_APP_VERSION = '1.20.20'
 
 CONFIG = {}
 
@@ -982,6 +982,28 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 .srv-act-btn.danger:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,.06); }
 .srv-act-btn:disabled { opacity: .4; cursor: default; }
 #srv-action-msg { font-size: 11px; color: var(--dim); padding: 0 14px 10px; min-height: 18px; }
+/* Wipe modal */
+#wipe-modal { max-width: 500px; width: 90vw; max-height: 85vh; display: flex; flex-direction: column; }
+#wipe-progress { flex: 1; overflow-y: auto; min-height: 0; font-size: 12px; }
+.wipe-log-line { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; border-bottom: 1px solid rgba(46,49,56,.4); }
+.wipe-log-line:last-child { border-bottom: none; }
+.wipe-log-icon { flex-shrink: 0; width: 14px; margin-top: 1px; }
+.wl-step { color: var(--blue); }
+.wl-ok   { color: var(--green); }
+.wl-err  { color: var(--red); }
+.wl-warn { color: var(--yellow); }
+.wl-info { color: var(--dim); }
+.wipe-spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#wipe-confirm-input { border: 1px solid var(--red); background: var(--bg3); color: var(--red); font-weight: bold; letter-spacing: .05em; }
+#wipe-confirm-input:focus { outline: none; border-color: var(--red); box-shadow: 0 0 0 2px rgba(239,68,68,.2); }
+.wipe-what { font-size: 11px; color: var(--dim); background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 8px 12px; margin: 10px 0; line-height: 1.7; }
+.wipe-what b { color: var(--text); }
+.wipe-opt { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; cursor: pointer; }
+.wipe-opt input { cursor: pointer; accent-color: var(--accent); }
+.wipe-seed-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 6px; }
+.wipe-seed-row input[type=text] { flex: 1; background: var(--bg3); border: 1px solid var(--border); border-radius: 3px; color: var(--text); padding: 4px 8px; font: 12px inherit; }
+.wipe-seed-row input[type=text]:focus { outline: none; border-color: var(--accent); }
 #cv-msg { font-size: 11px; color: var(--dim); font-weight: normal; font-family: inherit; }
 .cv-group-hdr td { padding: 6px 12px 4px; font-size: 10px; font-weight: bold; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); background: var(--bg3); border-bottom: 1px solid var(--border); }
 .cv-toggle { display: inline-flex; align-items: center; cursor: pointer; }
@@ -1339,6 +1361,8 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
             <button class="srv-act-btn" onclick="doServerAction('save')">&#128190; Save World</button>
             <button class="srv-act-btn" onclick="doServerAction('gc')">&#9851;&#65039; GC Collect</button>
             <button class="srv-act-btn danger" onclick="doServerAction('stop')">&#9888;&#65039; Stop Server</button>
+            <button class="srv-act-btn danger" onclick="showWipeDialog('map')" style="border-color:#b45309;color:#fcd34d">&#128257; Map Wipe</button>
+            <button class="srv-act-btn danger" onclick="showWipeDialog('full')">&#9888;&#65039; Full Wipe</button>
           </div>
           <div id="srv-action-msg"></div>
         </div>
@@ -3312,6 +3336,133 @@ async function doServerAction(action) {
   } catch(e) { if (msgEl) msgEl.textContent = 'Request failed'; }
 }
 
+// ── Wipe ────────────────────────────────────────────────────────────────────
+let _wipePollTimer = null;
+
+function showWipeDialog(wipeType) {
+  const isFull = wipeType === 'full';
+  const title  = isFull ? 'Full Wipe' : 'Map Wipe';
+  const whatLines = isFull
+    ? `<b>Stop</b> the game server<br>
+       <b>Update</b> Rust, Oxide, and auto-updatable plugins (optional)<br>
+       <b>Delete</b> map, save, blueprints, deaths, states files<br>
+       <b>Clear</b> Backpacks mod inventory (if installed)<br>
+       <b>Apply</b> new seed to start.sh<br>
+       <b>Restart</b> the game server`
+    : `<b>Stop</b> the game server<br>
+       <b>Update</b> Rust, Oxide, and auto-updatable plugins (optional)<br>
+       <b>Delete</b> map and save files only — blueprints kept<br>
+       <b>Clear</b> Backpacks mod inventory (if installed)<br>
+       <b>Apply</b> new seed to start.sh<br>
+       <b>Restart</b> the game server`;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'modal-overlay';
+  overlay.innerHTML = `<div id="wipe-modal" class="modal-box" style="max-width:500px;width:90vw;max-height:85vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-shrink:0">
+      <h3 style="margin:0;color:${isFull?'var(--red)':'#fcd34d'}">${isFull?'&#9888;&#65039;':'&#128257;'} ${title}</h3>
+      <button id="wipe-x" style="background:none;border:none;color:var(--dim);font-size:18px;cursor:pointer;padding:0 4px" title="Cancel">&times;</button>
+    </div>
+    <div id="wipe-cfg" style="flex:1;overflow-y:auto;min-height:0">
+      <div class="wipe-what">${whatLines}</div>
+      <div style="margin:12px 0 6px;font-size:11px;color:var(--dim);font-weight:bold;letter-spacing:.04em;text-transform:uppercase">Seed</div>
+      <label class="wipe-opt"><input type="checkbox" id="wipe-rand" checked onchange="wipeRandToggle()"> Random seed (server picks one)</label>
+      <div class="wipe-seed-row" id="wipe-seed-row" style="display:none">
+        <span style="color:var(--dim);white-space:nowrap">Seed:</span>
+        <input type="text" id="wipe-seed-val" placeholder="e.g. 12345678" maxlength="12">
+      </div>
+      <div style="margin:12px 0 6px;font-size:11px;color:var(--dim);font-weight:bold;letter-spacing:.04em;text-transform:uppercase">Updates</div>
+      <label class="wipe-opt"><input type="checkbox" id="wipe-upd-rust" checked> Update Rust server (SteamCMD)</label>
+      <label class="wipe-opt"><input type="checkbox" id="wipe-upd-oxide" checked> Update Oxide</label>
+      <label class="wipe-opt"><input type="checkbox" id="wipe-upd-plugins" checked> Update auto-updatable plugins</label>
+      <div style="margin:16px 0 6px;font-size:11px;color:var(--dim);font-weight:bold;letter-spacing:.04em;text-transform:uppercase">Confirm</div>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:6px">Type <b style="color:${isFull?'var(--red)':'#fcd34d'}">WIPE</b> to activate the button</div>
+      <input id="wipe-confirm-input" class="settings-input" type="text" placeholder="WIPE" autocomplete="off"
+        oninput="$('wipe-do').disabled=this.value.trim().toUpperCase()!=='WIPE'">
+    </div>
+    <div id="wipe-progress" style="display:none;flex:1;overflow-y:auto;min-height:120px;padding:8px 0"></div>
+    <div class="modal-btns" style="flex-shrink:0;margin-top:14px">
+      <button id="wipe-do" class="modal-btn ok" style="background:${isFull?'var(--red)':'#b45309'};border-color:${isFull?'var(--red)':'#b45309'}" disabled
+        onclick="startWipe(${JSON.stringify(wipeType)})">Do ${title}</button>
+      <button id="wipe-cancel" class="modal-btn secondary" onclick="closeWipeModal()">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  $('wipe-x').onclick = closeWipeModal;
+  overlay.onclick = e => { if (e.target === overlay) closeWipeModal(); };
+}
+
+function wipeRandToggle() {
+  const rand = $('wipe-rand').checked;
+  $('wipe-seed-row').style.display = rand ? 'none' : 'flex';
+}
+
+function closeWipeModal() {
+  clearInterval(_wipePollTimer);
+  const o = $('modal-overlay');
+  if (o) o.remove();
+}
+
+async function startWipe(wipeType) {
+  const rand   = $('wipe-rand').checked;
+  const seed   = rand ? null : ($('wipe-seed-val').value.trim() || null);
+  const opts   = {
+    update_rust:    $('wipe-upd-rust').checked,
+    update_oxide:   $('wipe-upd-oxide').checked,
+    update_plugins: $('wipe-upd-plugins').checked,
+  };
+  // Switch to progress view
+  $('wipe-cfg').style.display    = 'none';
+  $('wipe-progress').style.display = 'block';
+  $('wipe-do').disabled   = true;
+  $('wipe-cancel').textContent = 'Close';
+  $('wipe-cancel').onclick = closeWipeModal;
+  $('wipe-x').style.display = 'none';
+  appendWipeLine({msg: 'Starting ' + (wipeType === 'full' ? 'Full' : 'Map') + ' Wipe…', type: 'step'});
+  try {
+    await fetch('/api/server/wipe', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({wipe_type: wipeType, seed, opts})
+    });
+  } catch(e) {
+    appendWipeLine({msg: 'Request failed: ' + e, type: 'err'});
+    return;
+  }
+  _wipePollTimer = setInterval(pollWipeStatus, 1500);
+}
+
+async function pollWipeStatus() {
+  try {
+    const r = await fetch('/api/server/wipe/status');
+    const d = await r.json();
+    renderWipeLog(d.log || []);
+    if (d.done) {
+      clearInterval(_wipePollTimer);
+      $('wipe-cancel').textContent = 'Close';
+    }
+  } catch(e) { /* ignore transient failures */ }
+}
+
+let _wipeLastLen = 0;
+function renderWipeLog(log) {
+  if (log.length === _wipeLastLen) return;
+  const prog = $('wipe-progress');
+  for (let i = _wipeLastLen; i < log.length; i++) appendWipeLine(log[i]);
+  _wipeLastLen = log.length;
+  prog.scrollTop = prog.scrollHeight;
+}
+
+const _wipeIcons = {step:'▶', ok:'✓', err:'✗', warn:'⚠', info:'·'};
+function appendWipeLine(entry) {
+  const prog = $('wipe-progress');
+  if (!prog) return;
+  const d = document.createElement('div');
+  d.className = 'wipe-log-line';
+  const icon = _wipeIcons[entry.type] || '·';
+  d.innerHTML = `<span class="wipe-log-icon wl-${entry.type}">${icon}</span><span>${esc(entry.msg)}</span>`;
+  prog.appendChild(d);
+}
+
 async function oxideReloadAll() {
   $('oxide-status-msg').textContent = 'Reloading all plugins…';
   const btn = $('oxide-reload-all-btn');
@@ -4490,6 +4641,286 @@ async def _handle_server_action(req):
     return web.json_response({'error': 'Unknown action'}, status=400)
 
 
+# ── Wipe ─────────────────────────────────────────────────────────────────────
+
+_RUST_DIR      = '/home/steam/rustserver'
+_RUST_START_SH = '/home/steam/rustserver/start.sh'
+_OXIDE_RELEASE = 'https://github.com/OxideMod/Oxide.Rust/releases/latest/download/Oxide.Rust-linux.zip'
+
+_wipe_state: dict = {'running': False, 'done': True, 'ok': False, 'log': []}
+
+
+def _find_server_identity_dir() -> str:
+    base = os.path.join(_RUST_DIR, 'server')
+    if os.path.isdir(base):
+        for entry in sorted(os.listdir(base)):
+            path = os.path.join(base, entry)
+            if os.path.isdir(path):
+                return path
+    return os.path.join(base, 'my_server_identity')
+
+
+def _do_wipe_files(identity_dir: str, wipe_type: str) -> int:
+    import glob
+    removed = 0
+    for pat in ('*.map', '*.sav', '*.sav.*', '*_occlusion*.dat'):
+        for f in glob.glob(os.path.join(identity_dir, pat)):
+            os.remove(f); removed += 1
+    if wipe_type == 'full':
+        for pat in ('player.blueprints.*', 'player.deaths.*', 'player.states.*', 'relationship.*'):
+            for f in glob.glob(os.path.join(identity_dir, pat)):
+                os.remove(f); removed += 1
+    return removed
+
+
+def _clear_backpacks_data() -> int:
+    d = os.path.join(_RUST_DIR, 'oxide', 'data', 'Backpacks')
+    if not os.path.isdir(d):
+        return -1  # not installed
+    removed = 0
+    for fn in os.listdir(d):
+        if fn.endswith('.json'):
+            os.remove(os.path.join(d, fn)); removed += 1
+    return removed
+
+
+def _update_seed_in_startsh(seed: int) -> bool:
+    if not os.path.exists(_RUST_START_SH):
+        return False
+    with open(_RUST_START_SH) as f:
+        content = f.read()
+    new_content = re.sub(r'-server\.seed\s+\S+', f'-server.seed {seed}', content)
+    if new_content == content:
+        # Argument not found — append before end of exec line
+        new_content = re.sub(r'(\+server\.saveinterval\s+\d+)', r'\1 \\\n  -server.seed ' + str(seed), content)
+    if new_content == content:
+        return False  # couldn't find insertion point
+    tmp = _RUST_START_SH + '.tmp'
+    with open(tmp, 'w') as f:
+        f.write(new_content)
+    os.replace(tmp, _RUST_START_SH)
+    return True
+
+
+def _version_gt(a: str, b: str) -> bool:
+    def parts(s): return [int(x) for x in (s or '').split('.') if x.isdigit()]
+    ap, bp = parts(a), parts(b)
+    for i in range(max(len(ap), len(bp))):
+        av = ap[i] if i < len(ap) else 0
+        bv = bp[i] if i < len(bp) else 0
+        if av > bv: return True
+        if av < bv: return False
+    return False
+
+
+async def _run_wipe_task(wipe_type: str, seed, opts: dict):
+    import zipfile, io, shlex
+
+    def log(msg, typ='info'):
+        _wipe_state['log'].append({'msg': msg, 'type': typ})
+
+    hdrs = {'User-Agent': f'RconPanel/{_APP_VERSION}'}
+
+    try:
+        # 1. Stop server
+        log('Stopping game server…', 'step')
+        if _rcon_ok:
+            try:
+                await _rcon_query('server.stop', timeout=10.0)
+                log('Stop command sent', 'ok')
+            except Exception as e:
+                log(f'RCON stop: {e}', 'warn')
+        else:
+            log('RCON not connected — server may already be down', 'warn')
+        log('Waiting 10 s for shutdown…', 'info')
+        await asyncio.sleep(10)
+
+        # 2. Update Rust
+        if opts.get('update_rust'):
+            log('Updating Rust server…', 'step')
+            steamcmd = os.path.join(os.path.expanduser('~steam'), 'steamcmd', 'steamcmd.sh')
+            if not os.path.exists(steamcmd):
+                log('steamcmd.sh not found — skipping', 'warn')
+            else:
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        steamcmd,
+                        '+login', 'anonymous',
+                        '+force_install_dir', _RUST_DIR,
+                        '+app_update', '258550',
+                        '+quit',
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                    )
+                    await asyncio.wait_for(proc.communicate(), timeout=600)
+                    log('Rust server updated' if proc.returncode == 0 else f'SteamCMD exited {proc.returncode}',
+                        'ok' if proc.returncode == 0 else 'warn')
+                except asyncio.TimeoutError:
+                    log('SteamCMD timed out', 'err')
+                except Exception as e:
+                    log(f'SteamCMD failed: {e}', 'err')
+
+        # 3. Update Oxide
+        if opts.get('update_oxide'):
+            log('Updating Oxide…', 'step')
+            try:
+                async with _http_session.get(_OXIDE_RELEASE, timeout=aiohttp.ClientTimeout(total=120), headers=hdrs) as resp:
+                    if resp.status != 200:
+                        log(f'Oxide download failed: HTTP {resp.status}', 'err')
+                    else:
+                        data = await resp.read()
+                        def _extract():
+                            zipfile.ZipFile(io.BytesIO(data)).extractall(_RUST_DIR)
+                        await asyncio.to_thread(_extract)
+                        log('Oxide updated', 'ok')
+            except Exception as e:
+                log(f'Oxide update failed: {e}', 'err')
+
+        # 4. Update plugins (uMod only — others need manual upload)
+        if opts.get('update_plugins'):
+            log('Checking plugin updates…', 'step')
+            try:
+                uc_map = await asyncio.to_thread(_load_uc_map)
+                umod = [(slug, info) for slug, info in uc_map.items()
+                        if 'umod.org' in info.get('url', '')]
+                if not umod:
+                    log('No uMod plugins tracked in UpdateChecker.json', 'info')
+                else:
+                    sem = asyncio.Semaphore(6)
+                    async def _check(slug, info):
+                        async with sem:
+                            url = info.get('url', '')
+                            if not url: return None
+                            try:
+                                async with _http_session.get(
+                                    f'https://serverarmour.com/api/v3/marketplace/search?plugin={url}',
+                                    timeout=aiohttp.ClientTimeout(total=12), headers=hdrs) as r:
+                                    if r.status != 200: return None
+                                    d = await r.json(content_type=None)
+                                if d.get('status') != 200 or not d.get('data'): return None
+                                best = d['data'][0]
+                                if best.get('marketplace') != 'uMod': return None
+                                latest = best.get('latestVersion', '')
+                                if _version_gt(latest, info.get('version', '')):
+                                    return (slug, f'https://umod.org/plugins/{slug}.cs', latest)
+                            except Exception:
+                                return None
+                    checks = await asyncio.gather(*[_check(s, i) for s, i in umod])
+                    to_update = [c for c in checks if c]
+                    if not to_update:
+                        log('All tracked plugins up to date', 'info')
+                    else:
+                        updated = failed = 0
+                        for slug, dl_url, latest in to_update:
+                            try:
+                                async with _http_session.get(dl_url, timeout=aiohttp.ClientTimeout(total=30), headers=hdrs) as r:
+                                    if r.status != 200: raise Exception(f'HTTP {r.status}')
+                                    content = await r.read()
+                                dest = os.path.join(_RUST_DIR, 'oxide', 'plugins', f'{slug}.cs')
+                                tmp  = dest + '.tmp'
+                                def _w(c=content, t=tmp, d=dest):
+                                    with open(t, 'wb') as fh: fh.write(c)
+                                    os.replace(t, d)
+                                await asyncio.to_thread(_w)
+                                log(f'{slug} → {latest}', 'ok')
+                                updated += 1
+                            except Exception as e:
+                                log(f'Failed {slug}: {e}', 'warn')
+                                failed += 1
+                        log(f'{updated} updated, {failed} failed — others need manual upload', 'info')
+            except Exception as e:
+                log(f'Plugin check failed: {e}', 'err')
+
+        # 5. Wipe files
+        label = 'map + blueprint' if wipe_type == 'full' else 'map'
+        log(f'Deleting {label} files…', 'step')
+        try:
+            identity_dir = await asyncio.to_thread(_find_server_identity_dir)
+            n = await asyncio.to_thread(_do_wipe_files, identity_dir, wipe_type)
+            log(f'Deleted {n} file(s) from {identity_dir}', 'ok')
+        except Exception as e:
+            log(f'File deletion failed: {e}', 'err')
+
+        # 6. Clear backpacks
+        log('Clearing Backpacks mod data…', 'step')
+        try:
+            n = await asyncio.to_thread(_clear_backpacks_data)
+            if n == -1:
+                log('Backpacks mod not installed — skipped', 'info')
+            else:
+                log(f'Cleared {n} backpack file(s)', 'ok')
+        except Exception as e:
+            log(f'Backpack clear failed: {e}', 'warn')
+
+        # 7. Update seed
+        if seed is not None:
+            log(f'Setting seed {seed} in start.sh…', 'step')
+            try:
+                ok = await asyncio.to_thread(_update_seed_in_startsh, int(seed))
+                log('Seed updated in start.sh' if ok else 'Could not locate -server.seed in start.sh — update manually', 'ok' if ok else 'warn')
+            except Exception as e:
+                log(f'Seed update failed: {e}', 'warn')
+        else:
+            log('Random seed — no start.sh change needed', 'info')
+
+        # 8. Start server
+        log('Starting server…', 'step')
+        sudo_pass = _cfg.get('web', {}).get('sudo_password', '')
+        if sudo_pass:
+            try:
+                proc = await asyncio.create_subprocess_shell(
+                    f'echo {shlex.quote(sudo_pass)} | su -c "systemctl start rust-server" root',
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                _, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+                if proc.returncode == 0:
+                    log('Server started via systemd', 'ok')
+                else:
+                    log(f'systemctl start failed — run manually: systemctl start rust-server', 'warn')
+            except Exception as e:
+                log(f'Start failed ({e}) — run: systemctl start rust-server', 'warn')
+        else:
+            try:
+                await asyncio.create_subprocess_shell(
+                    f'nohup bash {shlex.quote(_RUST_START_SH)} > /tmp/rust_wipe_start.log 2>&1 &'
+                )
+                log('Server process launched (tip: add sudo_password to config.json for systemctl)', 'ok')
+            except Exception as e:
+                log(f'Could not launch server: {e} — run: systemctl start rust-server', 'warn')
+
+        _wipe_state['ok'] = True
+        log(('Full' if wipe_type == 'full' else 'Map') + ' Wipe complete!', 'ok')
+
+    except Exception as e:
+        log(f'Unexpected error: {e}', 'err')
+    finally:
+        _wipe_state['running'] = False
+        _wipe_state['done']    = True
+
+
+async def _handle_wipe(req):
+    if _wipe_state.get('running'):
+        return web.json_response({'error': 'Wipe already in progress'}, status=409)
+    d = await req.json()
+    wipe_type = d.get('wipe_type', 'map')
+    if wipe_type not in ('map', 'full'):
+        return web.json_response({'error': 'Invalid wipe_type'}, status=400)
+    seed = d.get('seed')
+    opts = d.get('opts', {})
+    _wipe_state.update({'running': True, 'done': False, 'ok': False, 'log': []})
+    asyncio.get_event_loop().create_task(_run_wipe_task(wipe_type, seed, opts))
+    return web.json_response({'ok': True})
+
+
+async def _handle_wipe_status(req):
+    return web.json_response({
+        'running': _wipe_state.get('running', False),
+        'done':    _wipe_state.get('done',    True),
+        'ok':      _wipe_state.get('ok',      False),
+        'log':     _wipe_state.get('log',     []),
+    })
+
+
 async def _cleanup_loop():
     while True:
         await asyncio.sleep(300)
@@ -4628,6 +5059,8 @@ def main():
     app.router.add_get('/api/server/cfg',         _handle_server_cfg_get)
     app.router.add_post('/api/server/cfg',        _handle_server_cfg_post)
     app.router.add_post('/api/server/action',     _handle_server_action)
+    app.router.add_post('/api/server/wipe',       _handle_wipe)
+    app.router.add_get('/api/server/wipe/status', _handle_wipe_status)
     app.on_startup.append(_startup)
     app.on_cleanup.append(_cleanup)
 
