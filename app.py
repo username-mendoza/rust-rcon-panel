@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.18'
+_APP_VERSION = '1.20.19'
 
 CONFIG = {}
 
@@ -936,7 +936,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 
 /* ── Server tab ── */
 #srv-tab-wrap { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 16px; }
-.srv-section { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.srv-section { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
 .srv-section-hdr {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px;
   background: var(--bg3); border-bottom: 1px solid var(--border);
@@ -983,6 +983,14 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 .srv-act-btn:disabled { opacity: .4; cursor: default; }
 #srv-action-msg { font-size: 11px; color: var(--dim); padding: 0 14px 10px; min-height: 18px; }
 #cv-msg { font-size: 11px; color: var(--dim); font-weight: normal; font-family: inherit; }
+.cv-group-hdr td { padding: 6px 12px 4px; font-size: 10px; font-weight: bold; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); background: var(--bg3); border-bottom: 1px solid var(--border); }
+.cv-toggle { display: inline-flex; align-items: center; cursor: pointer; }
+.cv-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.cv-toggle-track { position: relative; width: 34px; height: 18px; background: var(--border); border-radius: 9px; transition: background .2s; flex-shrink: 0; }
+.cv-toggle input:checked ~ .cv-toggle-track { background: var(--accent); }
+.cv-toggle input:disabled ~ .cv-toggle-track { opacity: .5; cursor: default; pointer-events: none; }
+.cv-toggle-thumb { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: #fff; border-radius: 50%; transition: transform .2s; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
+.cv-toggle input:checked ~ .cv-toggle-track .cv-toggle-thumb { transform: translateX(16px); }
 
 /* switch server + logout buttons in header */
 #hdr-switch, #hdr-settings, #hdr-about, #hdr-logout {
@@ -3166,15 +3174,35 @@ function renderConVars() {
   if (!_conVarsData) return;
   const tbody = $('cv-tbody');
   tbody.innerHTML = '';
+  let curGroup = null;
   for (const [name, cv] of Object.entries(_conVarsData)) {
+    if (cv.group && cv.group !== curGroup) {
+      curGroup = cv.group;
+      const hdr = document.createElement('tr');
+      hdr.className = 'cv-group-hdr';
+      hdr.innerHTML = `<td colspan="3">${esc(curGroup)}</td>`;
+      tbody.appendChild(hdr);
+    }
     const tr = document.createElement('tr');
     const safe = name.replace(/\./g,'_');
-    const actCell = cv.readonly
-      ? `<span class="cv-ro">read-only</span>`
-      : `<button class="srv-sm-btn" onclick="startEditConVar(${JSON.stringify(name)})">Edit</button>`;
+    let valHtml, actHtml;
+    if (cv.type === 'bool') {
+      const on = ['true','1','yes'].includes((cv.value || '').toLowerCase());
+      valHtml = `<label class="cv-toggle">
+        <input type="checkbox" ${on ? 'checked' : ''} ${cv.readonly ? 'disabled' : ''}
+          onchange="toggleConVar(${JSON.stringify(name)}, this.checked)">
+        <span class="cv-toggle-track"><span class="cv-toggle-thumb"></span></span>
+      </label>`;
+      actHtml = cv.readonly ? `<span class="cv-ro">read-only</span>` : '';
+    } else {
+      valHtml = `<span id="cvv-${safe}">${esc(cv.value)}</span>`;
+      actHtml = cv.readonly
+        ? `<span class="cv-ro">read-only</span>`
+        : `<button class="srv-sm-btn" onclick="startEditConVar(${JSON.stringify(name)})">Edit</button>`;
+    }
     tr.innerHTML = `<td class="cv-name">${esc(name)}</td>
-      <td class="cv-val"><span id="cvv-${safe}">${esc(cv.value)}</span></td>
-      <td class="cv-act">${actCell}</td>`;
+      <td class="cv-val">${valHtml}</td>
+      <td class="cv-act">${actHtml}</td>`;
     tbody.appendChild(tr);
   }
 }
@@ -3220,6 +3248,28 @@ async function commitConVar(name) {
     if (msg) msg.textContent = 'Failed';
   }
   renderConVars();
+}
+
+async function toggleConVar(name, on) {
+  const msg = $('cv-msg');
+  if (msg) msg.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/server/convar', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, value: on ? 'true' : 'false'})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      if (_conVarsData && _conVarsData[name]) _conVarsData[name].value = on ? 'True' : 'False';
+      if (msg) { msg.textContent = ''; }
+    } else {
+      if (msg) msg.textContent = d.error || 'Failed';
+      renderConVars(); // revert checkbox
+    }
+  } catch(e) {
+    if (msg) msg.textContent = 'Failed';
+    renderConVars();
+  }
 }
 
 async function loadServerCfg() {
@@ -4292,27 +4342,35 @@ async def _handle_oxide_upload(req):
 # ── Server tab handlers ──────────────────────────────────────────────────────
 
 _CONVAR_DEFS = [
-    # (rcon_name,                label,                  type,    readonly)
-    ('server.hostname',          'Hostname',             'str',   False),
-    ('server.description',       'Description',          'str',   False),
-    ('server.url',               'URL',                  'str',   False),
-    ('server.maxplayers',        'Max Players',          'int',   False),
-    ('fps.limit',                'FPS Limit',            'int',   False),
-    ('server.saveinterval',      'Save Interval (s)',    'int',   False),
-    ('server.tickrate',          'Tick Rate',            'int',   False),
-    ('decay.scale',              'Decay Scale',          'float', False),
-    ('server.pve',               'PVE Mode',             'bool',  False),
-    ('server.radiation',         'Radiation',            'bool',  False),
-    ('server.globalchat',        'Global Chat',          'bool',  False),
-    ('server.stability',         'Stability',            'bool',  False),
-    ('server.respawnresetrange', 'Respawn Reset Range',  'float', False),
-    ('server.itemdespawn',       'Item Despawn (s)',      'int',  False),
-    ('server.corpsedespawn',     'Corpse Despawn (s)',    'int',  False),
-    ('server.worldsize',         'World Size',           'int',   True),
-    ('server.seed',              'Seed',                 'str',   True),
-    ('server.identity',          'Identity',             'str',   True),
+    # (rcon_name,                        label,                   type,    readonly, group)
+    ('server.hostname',                  'Hostname',              'str',   False, 'Identity'),
+    ('server.description',               'Description',           'str',   False, 'Identity'),
+    ('server.url',                       'URL',                   'str',   False, 'Identity'),
+    ('server.headerimage',               'Header Image',          'str',   False, 'Identity'),
+    ('server.identity',                  'Identity',              'str',   True,  'Identity'),
+    ('server.level',                     'Level / Map',           'str',   True,  'Identity'),
+    ('server.maxplayers',                'Max Players',           'int',   False, 'Performance'),
+    ('server.tickrate',                  'Tick Rate',             'int',   False, 'Performance'),
+    ('fps.limit',                        'FPS Limit',             'int',   False, 'Performance'),
+    ('server.saveinterval',              'Save Interval (s)',     'int',   False, 'Performance'),
+    ('server.worldsize',                 'World Size',            'int',   True,  'World'),
+    ('server.seed',                      'Seed',                  'str',   True,  'World'),
+    ('env.progresstime',                 'Time Progression',      'bool',  False, 'World'),
+    ('server.pve',                       'PVE Mode',              'bool',  False, 'Gameplay'),
+    ('server.radiation',                 'Radiation',             'bool',  False, 'Gameplay'),
+    ('server.globalchat',                'Global Chat',           'bool',  False, 'Gameplay'),
+    ('server.stability',                 'Stability',             'bool',  False, 'Gameplay'),
+    ('server.censorplayerlist',          'Censor Player List',    'bool',  False, 'Gameplay'),
+    ('server.respawnresetrange',         'Respawn Reset Range',   'float', False, 'Gameplay'),
+    ('decay.scale',                      'Decay Scale',           'float', False, 'Decay'),
+    ('decay.upkeep',                     'Upkeep Costs',          'bool',  False, 'Decay'),
+    ('server.itemdespawn',               'Item Despawn (s)',      'int',   False, 'Decay'),
+    ('server.corpsedespawn',             'Corpse Despawn (s)',    'int',   False, 'Decay'),
+    ('antihack.enabled',                 'Anti-Hack',             'bool',  False, 'Anti-Hack'),
+    ('antihack.terrain',                 'Terrain Checks',        'bool',  False, 'Anti-Hack'),
+    ('antihack.speedhackdetection',      'Speed Hack Detection',  'bool',  False, 'Anti-Hack'),
 ]
-_CONVAR_NAMES   = {d[0] for d in _CONVAR_DEFS}
+_CONVAR_NAMES    = {d[0] for d in _CONVAR_DEFS}
 _CONVAR_WRITABLE = {d[0] for d in _CONVAR_DEFS if not d[3]}
 
 
@@ -4353,11 +4411,11 @@ async def _handle_server_convars(req):
     except Exception as e:
         return web.json_response({'error': str(e)}, status=503)
     out = {}
-    for (name, label, typ, ro), raw in zip(_CONVAR_DEFS, results):
+    for (name, label, typ, ro, grp), raw in zip(_CONVAR_DEFS, results):
         if isinstance(raw, Exception):
-            out[name] = {'value': '', 'label': label, 'type': typ, 'readonly': ro, 'error': str(raw)}
+            out[name] = {'value': '', 'label': label, 'type': typ, 'readonly': ro, 'group': grp, 'error': str(raw)}
         else:
-            out[name] = {'value': _parse_convar_val(raw), 'label': label, 'type': typ, 'readonly': ro}
+            out[name] = {'value': _parse_convar_val(raw), 'label': label, 'type': typ, 'readonly': ro, 'group': grp}
     return web.json_response(out)
 
 
