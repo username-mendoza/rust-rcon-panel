@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.14'
+_APP_VERSION = '1.20.15'
 
 CONFIG = {}
 
@@ -572,6 +572,24 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
   margin-left: 5px; min-width: 16px; text-align: center;
 }
 #pl-banned-wrap { flex: 1; overflow-y: auto; }
+/* ── Oxide subtabs ──────────────────────────────────────────────────────────── */
+#oxide-subtabs { display: flex; background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 12px; flex-shrink: 0; }
+#oxide-install-wrap { flex: 1; overflow-y: auto; display: none; padding: 24px 28px; }
+#oxide-install-wrap.active { display: block; }
+#oxide-scroll { display: block; }
+#oxide-scroll.hidden { display: none; }
+.ox-install-section { margin-bottom: 24px; }
+.ox-install-section h4 { font-size: 12px; color: var(--accent); margin: 0 0 8px; text-transform: uppercase; letter-spacing: .05em; }
+.ox-install-instr { font-size: 12px; color: var(--dim); line-height: 1.7; }
+.ox-install-instr code { background: var(--bg3); border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px; font-family: monospace; color: var(--text); font-size: 11px; }
+.ox-install-tree { font-family: monospace; font-size: 12px; line-height: 1.8; background: var(--bg3); border: 1px solid var(--border); border-radius: 5px; padding: 12px 16px; color: var(--text); }
+.ox-install-tree .tree-dir { color: var(--accent); }
+.ox-install-tree .tree-note { color: var(--dim); font-size: 11px; }
+#oxide-upload-zone { margin-top: 18px; border: 2px dashed var(--border); border-radius: 6px; padding: 28px; text-align: center; cursor: pointer; transition: border-color .2s, background .2s; }
+#oxide-upload-zone:hover, #oxide-upload-zone.dragover { border-color: var(--accent); background: rgba(100,200,100,.04); }
+#oxide-upload-zone .uz-icon { font-size: 32px; margin-bottom: 8px; }
+#oxide-upload-zone .uz-label { font-size: 13px; color: var(--text); margin-bottom: 4px; }
+#oxide-upload-zone .uz-sub { font-size: 11px; color: var(--dim); }
 #pl-banned-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
 #pl-banned-table th {
   padding: 7px 10px; text-align: left; color: var(--dim); font-size: 11px;
@@ -1142,6 +1160,10 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
     <!-- Oxide tab -->
     <div class="panel" id="panel-oxide">
       <input type="file" id="oxide-file-input" accept=".cs,.zip" style="display:none" onchange="oxideHandleFileSelect(this)">
+      <div id="oxide-subtabs">
+        <div class="pl-stab active" id="oxst-installed" onclick="switchOxideSubtab('installed')">Installed</div>
+        <div class="pl-stab"        id="oxst-install"   onclick="switchOxideSubtab('install')">Install New</div>
+      </div>
       <div id="oxide-toolbar">
         <button id="oxide-reload-all-btn" onclick="oxideReloadAll()">&#8635; Reload All</button>
         <button id="oxide-refresh-btn" onclick="loadOxideTab(true)">&#8635; Refresh</button>
@@ -1161,6 +1183,48 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
           </tr></thead>
           <tbody id="oxide-tbody"></tbody>
         </table>
+      </div>
+      <div id="oxide-install-wrap">
+        <div class="ox-install-section">
+          <h4>Upload Plugin</h4>
+          <p class="ox-install-instr">Upload a single <code>.cs</code> file or a <code>.zip</code> archive. A confirmation screen will show exactly what will be written before anything is installed.</p>
+          <div id="oxide-upload-zone" onclick="$('oxide-file-input').click()" ondragover="event.preventDefault();this.classList.add('dragover')" ondragleave="this.classList.remove('dragover')" ondrop="oxideHandleDrop(event)">
+            <div class="uz-icon">&#8657;</div>
+            <div class="uz-label">Click to browse or drag &amp; drop</div>
+            <div class="uz-sub">.cs file &nbsp;·&nbsp; .zip archive</div>
+          </div>
+          <div id="oxide-install-status" style="margin-top:10px;font-size:12px;color:var(--dim)"></div>
+        </div>
+        <div class="ox-install-section">
+          <h4>ZIP File Structure</h4>
+          <p class="ox-install-instr">Pack your ZIP to mirror the Oxide directory on the server. Files are extracted to their matching folder automatically.</p>
+          <div class="ox-install-tree">
+<span class="tree-dir">YourPlugin.zip</span>
+├── <span class="tree-dir">plugins/</span>
+│   └── YourPlugin.cs          <span class="tree-note">← required — the plugin itself</span>
+├── <span class="tree-dir">config/</span>
+│   └── YourPlugin.json        <span class="tree-note">← default config (optional)</span>
+├── <span class="tree-dir">data/</span>
+│   └── YourPlugin/            <span class="tree-note">← data files (optional, any structure)</span>
+│       └── presets.json
+└── <span class="tree-dir">lang/</span>
+    ├── <span class="tree-dir">en/</span>
+    │   └── YourPlugin.json    <span class="tree-note">← English strings (optional)</span>
+    └── <span class="tree-dir">ru/</span>
+        └── YourPlugin.json    <span class="tree-note">← other languages (optional)</span>
+          </div>
+        </div>
+        <div class="ox-install-section">
+          <h4>Server Paths</h4>
+          <p class="ox-install-instr">Each folder in the ZIP maps directly to the corresponding Oxide folder on the server:</p>
+          <div class="ox-install-tree">
+<span class="tree-dir">plugins/</span>  → /home/steam/rustserver/oxide/plugins/
+<span class="tree-dir">config/</span>   → /home/steam/rustserver/oxide/config/
+<span class="tree-dir">data/</span>     → /home/steam/rustserver/oxide/data/
+<span class="tree-dir">lang/</span>     → /home/steam/rustserver/oxide/lang/
+          </div>
+          <p class="ox-install-instr" style="margin-top:10px">Anything else in the ZIP (images, READMEs, installers) is ignored. The plugin is reloaded automatically after installation.</p>
+        </div>
       </div>
     </div>
   </div>
@@ -2682,7 +2746,27 @@ function settingsMsg(msg, type) {
 }
 
 // ── Oxide tab ──────────────────────────────────────────────────────────────
-let oxideData = null, oxideCache = 0, oxideUpdates = {};
+let oxideData = null, oxideCache = 0, oxideUpdates = {}, oxideSubtab = 'installed';
+
+function switchOxideSubtab(name) {
+  oxideSubtab = name;
+  ['installed','install'].forEach(t => {
+    $('oxst-'+t).className = 'pl-stab' + (t === name ? ' active' : '');
+  });
+  const toolbar = $('oxide-toolbar');
+  const scroll  = $('oxide-scroll');
+  const install = $('oxide-install-wrap');
+  if (name === 'installed') {
+    toolbar.style.display = '';
+    scroll.classList.remove('hidden');
+    install.classList.remove('active');
+    loadOxideTab();
+  } else {
+    toolbar.style.display = 'none';
+    scroll.classList.add('hidden');
+    install.classList.add('active');
+  }
+}
 
 function versionGt(a, b) {
   const ap = (a||'').split('.').map(s=>parseInt(s,10)||0);
@@ -2804,16 +2888,35 @@ function oxideUploadFile(slug) {
   inp.value = '';
   inp.click();
 }
+function oxideHandleDrop(e) {
+  e.preventDefault();
+  $('oxide-upload-zone').classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  _oxideUploadTarget = null;
+  // Reuse the file input handler by simulating a file list
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  const inp = $('oxide-file-input');
+  inp.files = dt.files;
+  oxideHandleFileSelect(inp);
+}
+function oxideSetInstallStatus(msg) {
+  const el = $('oxide-install-status');
+  if (el) el.textContent = msg;
+}
 async function oxideHandleFileSelect(input) {
   const file = input.files[0];
   if (!file) return;
+  const fromInstallTab = oxideSubtab === 'install';
+  const setMsg = msg => {
+    if (fromInstallTab) oxideSetInstallStatus(msg);
+    else $('oxide-status-msg').textContent = msg;
+  };
   const ext = file.name.split('.').pop().toLowerCase();
-  if (ext !== 'cs' && ext !== 'zip') {
-    $('oxide-status-msg').textContent = 'Select a .cs or .zip file';
-    return;
-  }
+  if (ext !== 'cs' && ext !== 'zip') { setMsg('Select a .cs or .zip file'); return; }
   const slug = _oxideUploadTarget || file.name.replace(/\.(cs|zip)$/i, '');
-  $('oxide-status-msg').textContent = 'Inspecting ' + file.name + '…';
+  setMsg('Inspecting ' + file.name + '…');
   const fd = new FormData();
   fd.append('slug', slug);
   fd.append('file', file);
@@ -2821,21 +2924,22 @@ async function oxideHandleFileSelect(input) {
   try {
     const r = await fetch('/api/oxide/inspect', {method: 'POST', body: fd});
     plan = await r.json();
-  } catch(e) { $('oxide-status-msg').textContent = 'Inspect failed'; return; }
-  if (!plan.ok) { $('oxide-status-msg').textContent = plan.error || 'Inspect failed'; return; }
-  $('oxide-status-msg').textContent = '';
+  } catch(e) { setMsg('Inspect failed'); return; }
+  if (!plan.ok) { setMsg(plan.error || 'Inspect failed'); return; }
+  setMsg('');
   // Show confirmation modal
   const overlay = document.createElement('div');
   overlay.id = 'modal-overlay';
+  const typeIcon = { plugin: '🔌', config: '⚙', data: '📦', lang: '🌐' };
   const fileRows = plan.files.map(f => {
-    const icon = f.type === 'plugin' ? '🔌' : '🌐';
+    const icon = typeIcon[f.type] || '📄';
     const warn = f.warning ? ` <span style="color:var(--yellow);font-size:10px">(${esc(f.warning)})</span>` : '';
     return `<div style="padding:3px 0;font-size:12px">${icon} <span style="color:var(--dim)">${esc(f.src)}</span> → <b>${esc(f.dest)}</b>${warn}</div>`;
   }).join('');
   const warnRows = plan.warnings.length
     ? `<div style="margin-top:10px;font-size:11px;color:var(--yellow)">${plan.warnings.map(w=>'⚠ '+esc(w)).join('<br>')}</div>`
     : '';
-  const closeInstall = () => { overlay.remove(); $('oxide-status-msg').textContent = 'Cancelled'; };
+  const closeInstall = () => { overlay.remove(); setMsg('Cancelled'); };
   overlay.innerHTML = `<div id="modal-box" style="max-width:520px;width:90vw;max-height:85vh;display:flex;flex-direction:column">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-shrink:0">
       <h3 style="margin:0">Install ${(plan.plugin_slugs||[plan.plugin_slug]).map(s=>esc(s)).join(' + ')}</h3>
@@ -2857,16 +2961,17 @@ async function oxideHandleFileSelect(input) {
   overlay.onclick = e => { if (e.target === overlay) closeInstall(); };
   $('ox-install-ok').onclick = async () => {
     overlay.remove();
-    $('oxide-status-msg').textContent = 'Installing ' + (plan.plugin_slugs||[plan.plugin_slug]).join(', ') + '…';
+    setMsg('Installing ' + (plan.plugin_slugs||[plan.plugin_slug]).join(', ') + '…');
     const fd2 = new FormData();
     fd2.append('slug', slug);
     fd2.append('file', file);
     try {
       const r2 = await fetch('/api/oxide/upload', {method: 'POST', body: fd2});
       const d = await r2.json();
-      $('oxide-status-msg').textContent = d.result || (d.ok ? 'Installed!' : (d.error || 'Failed'));
-      if (d.ok) setTimeout(() => loadOxideTab(true), 2000);
-    } catch(e) { $('oxide-status-msg').textContent = 'Install failed'; }
+      setMsg(d.result || (d.ok ? 'Installed!' : (d.error || 'Failed')));
+      if (d.ok && !fromInstallTab) setTimeout(() => loadOxideTab(true), 2000);
+      if (d.ok && fromInstallTab) setTimeout(() => { switchOxideSubtab('installed'); }, 2000);
+    } catch(e) { setMsg('Install failed'); }
   };
 }
 
@@ -3751,11 +3856,13 @@ def _inspect_upload(slug: str, filename: str, content: bytes) -> dict:
         files.append({'src': filename, 'dest': f'plugins/{dest_slug}.cs', 'type': 'plugin'})
         cs_slugs.append(dest_slug)
     else:
-        # ZIP
+        # ZIP — expects oxide directory structure: plugins/ config/ data/ lang/
         try:
             zf = zipfile.ZipFile(io.BytesIO(content))
         except zipfile.BadZipFile:
             return {'ok': False, 'error': 'File is not a valid ZIP archive'}
+
+        _OXIDE_ROOTS = {'plugins', 'config', 'data', 'lang'}
 
         for info in zf.infolist():
             if info.is_dir():
@@ -3768,8 +3875,35 @@ def _inspect_upload(slug: str, filename: str, content: bytes) -> dict:
             parts = raw.replace('\\', '/').split('/')
             name  = parts[-1]
             ext   = os.path.splitext(name)[1].lower()
+            root  = parts[0].lower() if len(parts) > 1 else ''
 
-            if ext == '.cs':
+            if root in _OXIDE_ROOTS:
+                # Oxide directory structure — map directly
+                rel = '/'.join(parts[1:])  # path under the oxide root folder
+                if not rel:
+                    continue
+                if root == 'plugins':
+                    if ext != '.cs':
+                        warnings.append(f'__skip__{ext or "(no ext)"}')
+                        continue
+                    entry_slug = re.sub(r'\.cs$', '', name, flags=re.IGNORECASE)
+                    if not re.match(r'^\w+$', entry_slug):
+                        warnings.append(f'Skipped {raw!r}: invalid plugin name')
+                        continue
+                    data = zf.read(info)
+                    if b'class ' not in data and b'namespace' not in data:
+                        warnings.append(f'Skipped {raw!r}: does not look like a C# plugin')
+                        continue
+                    files.append({'src': raw, 'dest': f'plugins/{entry_slug}.cs', 'type': 'plugin'})
+                    cs_slugs.append(entry_slug)
+                elif root == 'config':
+                    files.append({'src': raw, 'dest': f'config/{rel}', 'type': 'config'})
+                elif root == 'data':
+                    files.append({'src': raw, 'dest': f'data/{rel}', 'type': 'data'})
+                elif root == 'lang':
+                    files.append({'src': raw, 'dest': f'lang/{rel}', 'type': 'lang'})
+            elif ext == '.cs':
+                # Flat .cs at root — still supported
                 entry_slug = re.sub(r'\.cs$', '', name, flags=re.IGNORECASE)
                 if not re.match(r'^\w+$', entry_slug):
                     warnings.append(f'Skipped {raw!r}: invalid plugin name')
@@ -3780,21 +3914,6 @@ def _inspect_upload(slug: str, filename: str, content: bytes) -> dict:
                     continue
                 files.append({'src': raw, 'dest': f'plugins/{entry_slug}.cs', 'type': 'plugin'})
                 cs_slugs.append(entry_slug)
-
-            elif ext == '.json':
-                # Detect lang code from parent folder, e.g. "en/Plugin.json" or "lang/en/Plugin.json"
-                lang_code = None
-                for part in reversed(parts[:-1]):
-                    if _LANG_CODE_RE.match(part):
-                        lang_code = part
-                        break
-                if lang_code:
-                    files.append({'src': raw, 'dest': f'lang/{lang_code}/{name}', 'type': 'lang'})
-                else:
-                    # JSON at root or unknown folder → default to en
-                    files.append({'src': raw, 'dest': f'lang/en/{name}', 'type': 'lang',
-                                  'warning': 'No language folder detected — placed in lang/en/'})
-                    warnings.append(f'{raw!r}: no language folder found, defaulting to lang/en/')
             else:
                 warnings.append(f'__skip__{ext or "(no ext)"}')  # aggregated below
 
@@ -3851,12 +3970,9 @@ async def _handle_oxide_upload(req):
 
     def _write_all():
         for f in plan['files']:
-            if f['type'] == 'plugin':
-                dest = f'/home/steam/rustserver/oxide/plugins/{os.path.basename(f["dest"])}'
-            else:
-                lang_rel = f['dest']  # lang/{code}/{name}
-                dest = f'/home/steam/rustserver/oxide/{lang_rel}'
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
+            # dest is always relative to the oxide root, e.g. "plugins/Foo.cs", "lang/en/Foo.json"
+            dest = f'/home/steam/rustserver/oxide/{f["dest"]}'
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
             tmp = dest + '.tmp'
             data = zf.read(f['src']) if zf else content
             with open(tmp, 'wb') as fh:
