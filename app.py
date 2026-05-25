@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.20'
+_APP_VERSION = '1.20.21'
 
 CONFIG = {}
 
@@ -1361,6 +1361,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
             <button class="srv-act-btn" onclick="doServerAction('save')">&#128190; Save World</button>
             <button class="srv-act-btn" onclick="doServerAction('gc')">&#9851;&#65039; GC Collect</button>
             <button class="srv-act-btn danger" onclick="doServerAction('stop')">&#9888;&#65039; Stop Server</button>
+            <button class="srv-act-btn" onclick="showRestartDialog()" style="border-color:#6366f1;color:#a5b4fc">&#8635; Restart Server</button>
             <button class="srv-act-btn danger" onclick="showWipeDialog('map')" style="border-color:#b45309;color:#fcd34d">&#128257; Map Wipe</button>
             <button class="srv-act-btn danger" onclick="showWipeDialog('full')">&#9888;&#65039; Full Wipe</button>
           </div>
@@ -3336,6 +3337,45 @@ async function doServerAction(action) {
   } catch(e) { if (msgEl) msgEl.textContent = 'Request failed'; }
 }
 
+function showRestartDialog() {
+  const overlay = document.createElement('div');
+  overlay.id = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal-box" style="max-width:360px;width:90vw">
+    <h3 style="margin:0 0 12px">&#8635; Restart Server</h3>
+    <p style="font-size:12px;color:var(--dim);margin-bottom:14px">
+      Broadcasts a countdown to all players, then restarts gracefully via RCON.
+    </p>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px">
+      <label style="font-size:12px;white-space:nowrap;color:var(--dim)">Restart in (seconds):</label>
+      <input id="restart-secs" type="number" value="300" min="10" max="86400"
+        style="width:90px;background:var(--bg3);border:1px solid var(--border);border-radius:3px;color:var(--text);padding:4px 8px;font:12px inherit">
+    </div>
+    <div class="modal-btns">
+      <button class="modal-btn ok" onclick="doRestart()">Restart</button>
+      <button class="modal-btn secondary" onclick="$('modal-overlay').remove()">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+  $('restart-secs').focus();
+  $('restart-secs').select();
+}
+
+async function doRestart() {
+  const secs = parseInt($('restart-secs').value) || 300;
+  document.getElementById('modal-overlay')?.remove();
+  const msgEl = $('srv-action-msg');
+  if (msgEl) msgEl.textContent = `Sending restart in ${secs}s…`;
+  try {
+    const r = await fetch('/api/server/action', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action: 'restart', seconds: secs})
+    });
+    const d = await r.json();
+    if (msgEl) msgEl.textContent = d.result || (d.ok ? `Restart in ${secs}s` : (d.error || 'Failed'));
+  } catch(e) { if (msgEl) msgEl.textContent = 'Request failed'; }
+}
+
 // ── Wipe ────────────────────────────────────────────────────────────────────
 let _wipePollTimer = null;
 
@@ -4636,6 +4676,13 @@ async def _handle_server_action(req):
         try:
             result = await _rcon_query('server.stop', timeout=10.0)
             return web.json_response({'ok': True, 'result': result.strip() or 'Server stopping…'})
+        except Exception as e:
+            return web.json_response({'error': str(e)}, status=503)
+    elif action == 'restart':
+        seconds = max(10, min(int(d.get('seconds', 300)), 86400))
+        try:
+            result = await _rcon_query(f'restart {seconds}', timeout=10.0)
+            return web.json_response({'ok': True, 'result': result.strip() or f'Restart scheduled in {seconds}s'})
         except Exception as e:
             return web.json_response({'error': str(e)}, status=503)
     return web.json_response({'error': 'Unknown action'}, status=400)
