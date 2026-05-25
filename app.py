@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.21'
+_APP_VERSION = '1.20.22'
 
 CONFIG = {}
 
@@ -1472,6 +1472,7 @@ function switchTab(name) {
   if (name === 'map') {
     initMapIfNeeded();
     if (rconOk && Object.keys(mapPlayers).length === 0) refreshMap();
+    pollDeepSea();
     // ResizeObserver fires automatically when panel becomes visible, triggering drawMap()
   }
   if (name === 'console' && autoScroll) { const co = $('console-output'); co.scrollTop = co.scrollHeight; }
@@ -1943,6 +1944,7 @@ let WORLD_SIZE = 4500;
 let MAP_SEED = 0;
 let MAP_IMG_CONFIGURED = false;
 const MAP_BORDER = 500;  // ocean border around terrain (must match plugin BORDER)
+let _deepSeaData = null;
 let mapNeedsInit = true;
 let mapImgRetries = 0;
 
@@ -2216,7 +2218,68 @@ function drawMap() {
     ctx.fillStyle = '#ffffff';
     ctx.fillText(p.name, cx+9, cy+4);
   }
+  // Deep Sea portal indicators — drawn in ocean border at each cardinal edge
+  if (_deepSeaData && _deepSeaData.portals && _deepSeaData.portals.length) {
+    const ds = _deepSeaData;
+    const bord = my0 + size - ty - ts;  // ocean border size in pixels (same on all sides)
+    const edgePad = bord * 0.5;
+    const dirPos = {
+      'North': [tx + ts * 0.5, ty - edgePad],
+      'South': [tx + ts * 0.5, ty + ts + edgePad],
+      'East':  [tx + ts + edgePad, ty + ts * 0.5],
+      'West':  [tx - edgePad, ty + ts * 0.5],
+    };
+    const dirOff = { 'North': [0, -1], 'South': [0, 1], 'East': [1, 0], 'West': [-1, 0] };
+    for (const p of ds.portals) {
+      const pos = dirPos[p.name];
+      if (!pos) continue;
+      const isActive = ds.open && p.name === ds.portalDirection;
+      const [px, py] = pos;
+      const [dx, dy] = dirOff[p.name] || [0, -1];
+      ctx.save();
+      if (isActive) { ctx.shadowColor = '#22d3ee'; ctx.shadowBlur = 14; }
+      ctx.beginPath(); ctx.arc(px, py, isActive ? 8 : 5, 0, Math.PI * 2);
+      ctx.fillStyle   = isActive ? 'rgba(6,182,212,0.25)' : 'rgba(80,130,160,0.15)';
+      ctx.strokeStyle = isActive ? '#22d3ee'               : 'rgba(80,140,170,0.4)';
+      ctx.lineWidth   = isActive ? 1.5 : 1;
+      ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = isActive ? '#7dd3fc' : 'rgba(100,160,190,0.5)';
+      ctx.fill();
+      if (isActive) {
+        const lx = px + dx * 18, ly = py + dy * 18 + 3;
+        ctx.font = 'bold 9px Consolas,monospace';
+        ctx.textAlign = dx === 0 ? 'center' : dx > 0 ? 'left' : 'right';
+        ctx.strokeStyle = 'rgba(0,0,0,0.8)'; ctx.lineWidth = 2.5;
+        ctx.strokeText('Deep Sea', lx, ly);
+        ctx.fillStyle = '#7dd3fc'; ctx.fillText('Deep Sea', lx, ly);
+        ctx.textAlign = 'left';
+      }
+      ctx.restore();
+    }
+  }
+
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  // Deep Sea status badge — fixed HUD overlay (bottom-left of canvas)
+  if (_deepSeaData) {
+    const ds = _deepSeaData;
+    const secs = ds.open ? ds.timeToWipe : ds.timeToNextOpening;
+    const hm   = secs > 0 ? fmtSecs(secs) : '';
+    const label = ds.open
+      ? '⚓ DEEP SEA  ●  OPEN' + (hm ? '  closes in ' + hm : '')
+      : '⚓ DEEP SEA  ●  CLOSED' + (hm ? '  opens in ' + hm : '');
+    ctx.font = 'bold 10px Consolas,monospace';
+    const tw = ctx.measureText(label).width;
+    const bx = 10, by = H - 30, bw = tw + 18, bh = 20;
+    ctx.fillStyle   = ds.open ? 'rgba(4,44,55,0.90)'   : 'rgba(18,22,28,0.82)';
+    ctx.strokeStyle = ds.open ? 'rgba(34,211,238,0.7)' : 'rgba(70,90,110,0.45)';
+    ctx.lineWidth   = 1;
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.strokeRect(bx, by, bw, bh);
+    ctx.fillStyle = ds.open ? '#22d3ee' : 'rgba(130,160,180,0.85)';
+    ctx.fillText(label, bx + 9, by + 14);
+  }
 }
 
 // Parse location command response: "76561198... Name: G5, 123.4, -678.9"
@@ -2244,6 +2307,18 @@ function refreshMap() {
   if (!rconOk) return;
   sendBg('location');
   if (!mapImg && MAP_IMG_CONFIGURED) { mapImgRetries = 0; loadMapImg(); }
+}
+
+function fmtSecs(s) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
+}
+
+function pollDeepSea() {
+  if (!rconOk) return;
+  fetch('/api/server/deepsea').then(r => r.json()).then(d => {
+    if (!d.error) { _deepSeaData = d; if (activeTab === 'map') drawMap(); }
+  }).catch(() => {});
 }
 
 function rerenderMap() {
@@ -2365,7 +2440,7 @@ mapCanvas.addEventListener('dblclick', resetView);
 // window resize is handled by ResizeObserver above
 
 // Auto-refresh map every 30s when visible
-setInterval(() => { if (activeTab === 'map' && rconOk) refreshMap(); }, 30000);
+setInterval(() => { if (activeTab === 'map' && rconOk) { refreshMap(); pollDeepSea(); } }, 30000);
 
 // ── Players tab ────────────────────────────────────────────────────────────
 function fmtDuration(secs) {
@@ -4968,6 +5043,46 @@ async def _handle_wipe_status(req):
     })
 
 
+def _parse_deepsea_status(text: str) -> dict:
+    result: dict = {'open': False, 'busy': False, 'timeToNextOpening': 0, 'timeToWipe': 0,
+                    'portalDirection': '', 'portals': []}
+    in_portals = False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith('Open:'):
+            result['open'] = line.split(':', 1)[1].strip() == 'True'
+        elif line.startswith('Busy:'):
+            result['busy'] = line.split(':', 1)[1].strip() == 'True'
+        elif line.startswith('TimeToNextOpening:'):
+            try: result['timeToNextOpening'] = int(line.split(':', 1)[1].strip())
+            except ValueError: pass
+        elif line.startswith('TimeToWipe:'):
+            try: result['timeToWipe'] = int(line.split(':', 1)[1].strip())
+            except ValueError: pass
+        elif line.startswith('Portal Direction:'):
+            result['portalDirection'] = line.split(':', 1)[1].strip()
+        elif line.startswith('Portals:'):
+            in_portals = True
+        elif in_portals and line.startswith('Entrance'):
+            m = re.search(r'Entrance\s+(\w+)\s+\S+\s+\((-?[\d.]+),\s*(-?[\d.]+),\s*(-?[\d.]+)\)', line)
+            if m:
+                result['portals'].append({'name': m.group(1), 'x': float(m.group(2)),
+                                          'y': float(m.group(3)), 'z': float(m.group(4))})
+    return result
+
+
+async def _handle_deepsea(req):
+    if not _rcon_ws:
+        return web.json_response({'error': 'Not connected'}, status=503)
+    try:
+        raw = await _rcon_query('deepsea.status', timeout=8.0)
+        return web.json_response(_parse_deepsea_status(raw))
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
 async def _cleanup_loop():
     while True:
         await asyncio.sleep(300)
@@ -5108,6 +5223,7 @@ def main():
     app.router.add_post('/api/server/action',     _handle_server_action)
     app.router.add_post('/api/server/wipe',       _handle_wipe)
     app.router.add_get('/api/server/wipe/status', _handle_wipe_status)
+    app.router.add_get('/api/server/deepsea',     _handle_deepsea)
     app.on_startup.append(_startup)
     app.on_cleanup.append(_cleanup)
 
