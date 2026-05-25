@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.16'
+_APP_VERSION = '1.20.17'
 
 CONFIG = {}
 
@@ -2929,11 +2929,24 @@ async function oxideHandleFileSelect(input) {
   const overlay = document.createElement('div');
   overlay.id = 'modal-overlay';
   const typeIcon = { plugin: '🔌', config: '⚙', data: '📦', lang: '🌐' };
+  const conflictConfigs = plan.files.filter(f => f.type === 'config' && f.existing);
   const fileRows = plan.files.map(f => {
     const icon = typeIcon[f.type] || '📄';
     const warn = f.warning ? ` <span style="color:var(--yellow);font-size:10px">(${esc(f.warning)})</span>` : '';
-    return `<div style="padding:3px 0;font-size:12px">${icon} <span style="color:var(--dim)">${esc(f.src)}</span> → <b>${esc(f.dest)}</b>${warn}</div>`;
+    const conflictNote = (f.type === 'config' && f.existing)
+      ? ` <span style="color:var(--yellow);font-size:10px">(exists — see below)</span>` : '';
+    return `<div style="padding:3px 0;font-size:12px">${icon} <span style="color:var(--dim)">${esc(f.src)}</span> → <b>${esc(f.dest)}</b>${warn}${conflictNote}</div>`;
   }).join('');
+  const conflictRows = conflictConfigs.map(f => `
+    <div style="background:var(--bg3);border:1px solid var(--yellow);border-radius:4px;padding:8px 12px;margin-top:8px">
+      <div style="font-size:11px;color:var(--yellow);margin-bottom:6px">⚠ Config already exists: <b>${esc(f.dest)}</b></div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-bottom:4px">
+        <input type="radio" name="cfg_${f.src.replace(/[^a-zA-Z0-9]/g,'_')}" value="keep" checked> Keep existing (recommended)
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+        <input type="radio" name="cfg_${f.src.replace(/[^a-zA-Z0-9]/g,'_')}" value="overwrite"> Overwrite with new
+      </label>
+    </div>`).join('');
   const warnRows = plan.warnings.length
     ? `<div style="margin-top:10px;font-size:11px;color:var(--yellow)">${plan.warnings.map(w=>'⚠ '+esc(w)).join('<br>')}</div>`
     : '';
@@ -2946,6 +2959,7 @@ async function oxideHandleFileSelect(input) {
     <div style="overflow-y:auto;flex:1;min-height:0">
       <div style="margin-bottom:6px;font-size:11px;color:var(--dim)">${plan.files.length} file${plan.files.length!==1?'s':''} will be written:</div>
       <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:8px 12px">${fileRows}</div>
+      ${conflictRows}
       ${warnRows}
     </div>
     <div class="modal-btns" style="flex-shrink:0;margin-top:14px">
@@ -2958,11 +2972,19 @@ async function oxideHandleFileSelect(input) {
   $('ox-install-cancel').onclick = closeInstall;
   overlay.onclick = e => { if (e.target === overlay) closeInstall(); };
   $('ox-install-ok').onclick = async () => {
+    // Collect config files the user wants to keep (skip them during write)
+    const skipSrcs = conflictConfigs
+      .filter(f => {
+        const radios = overlay.querySelectorAll(`input[name="cfg_${f.src.replace(/[^a-zA-Z0-9]/g,'_')}"]`);
+        return Array.from(radios).find(r => r.checked)?.value === 'keep';
+      })
+      .map(f => f.src);
     overlay.remove();
     setMsg('Installing ' + (plan.plugin_slugs||[plan.plugin_slug]).join(', ') + '…');
     const fd2 = new FormData();
     fd2.append('slug', slug);
     fd2.append('file', file);
+    if (skipSrcs.length) fd2.append('skip_srcs', skipSrcs.join(','));
     try {
       const r2 = await fetch('/api/oxide/upload', {method: 'POST', body: fd2});
       const d = await r2.json();
@@ -3895,7 +3917,9 @@ def _inspect_upload(slug: str, filename: str, content: bytes) -> dict:
                     files.append({'src': raw, 'dest': f'plugins/{entry_slug}.cs', 'type': 'plugin'})
                     cs_slugs.append(entry_slug)
                 elif root == 'config':
-                    files.append({'src': raw, 'dest': f'config/{rel}', 'type': 'config'})
+                    dest_path = f'/home/steam/rustserver/oxide/config/{rel}'
+                    files.append({'src': raw, 'dest': f'config/{rel}', 'type': 'config',
+                                  'existing': os.path.exists(dest_path)})
                 elif root == 'data':
                     files.append({'src': raw, 'dest': f'data/{rel}', 'type': 'data'})
                 elif root == 'lang':
@@ -3929,22 +3953,24 @@ def _inspect_upload(slug: str, filename: str, content: bytes) -> dict:
 
 
 async def _read_multipart_upload(req):
-    """Read multipart form, return (slug, filename, content) or raise."""
+    """Read multipart form, return (slug, filename, content, skip_srcs) or raise."""
     reader = await req.multipart()
-    slug = filename = content = None
+    slug = filename = content = skip_srcs = None
     async for part in reader:
         if part.name == 'slug':
             slug = (await part.read()).decode('utf-8', errors='replace').strip()
         elif part.name == 'file':
             filename = part.filename or ''
             content  = await part.read()
-    return slug or '', filename or '', content or b''
+        elif part.name == 'skip_srcs':
+            skip_srcs = (await part.read()).decode('utf-8', errors='replace').strip()
+    return slug or '', filename or '', content or b'', skip_srcs or ''
 
 
 async def _handle_oxide_inspect(req):
     """Inspect a .cs or .zip upload and return a placement plan without writing anything."""
     try:
-        slug, filename, content = await _read_multipart_upload(req)
+        slug, filename, content, _ = await _read_multipart_upload(req)
     except Exception:
         return web.json_response({'ok': False, 'error': 'Expected multipart form'}, status=400)
     plan = await asyncio.to_thread(_inspect_upload, slug, filename, content)
@@ -3954,7 +3980,7 @@ async def _handle_oxide_inspect(req):
 async def _handle_oxide_upload(req):
     """Install a .cs or .zip plugin upload after client confirmation."""
     try:
-        slug, filename, content = await _read_multipart_upload(req)
+        slug, filename, content, skip_srcs = await _read_multipart_upload(req)
     except Exception:
         return web.json_response({'ok': False, 'error': 'Expected multipart form'}, status=400)
 
@@ -3962,12 +3988,16 @@ async def _handle_oxide_upload(req):
     if not plan['ok']:
         return web.json_response({'ok': False, 'error': plan['error']}, status=400)
 
+    skip_set = set(s.strip() for s in skip_srcs.split(',') if s.strip()) if skip_srcs else set()
+
     import zipfile, io
     is_zip = filename.lower().endswith('.zip') or content[:2] == b'PK'
     zf = zipfile.ZipFile(io.BytesIO(content)) if is_zip else None
 
     def _write_all():
         for f in plan['files']:
+            if f['src'] in skip_set:
+                continue
             # dest is always relative to the oxide root, e.g. "plugins/Foo.cs", "lang/en/Foo.json"
             dest = f'/home/steam/rustserver/oxide/{f["dest"]}'
             os.makedirs(os.path.dirname(dest), exist_ok=True)
