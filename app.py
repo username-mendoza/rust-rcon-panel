@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.15'
+_APP_VERSION = '1.20.16'
 
 CONFIG = {}
 
@@ -582,7 +582,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 .ox-install-section h4 { font-size: 12px; color: var(--accent); margin: 0 0 8px; text-transform: uppercase; letter-spacing: .05em; }
 .ox-install-instr { font-size: 12px; color: var(--dim); line-height: 1.7; }
 .ox-install-instr code { background: var(--bg3); border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px; font-family: monospace; color: var(--text); font-size: 11px; }
-.ox-install-tree { font-family: monospace; font-size: 12px; line-height: 1.8; background: var(--bg3); border: 1px solid var(--border); border-radius: 5px; padding: 12px 16px; color: var(--text); }
+.ox-install-tree { font-family: monospace; font-size: 12px; line-height: 1.8; background: var(--bg3); border: 1px solid var(--border); border-radius: 5px; padding: 12px 16px; color: var(--text); white-space: pre; }
 .ox-install-tree .tree-dir { color: var(--accent); }
 .ox-install-tree .tree-note { color: var(--dim); font-size: 11px; }
 #oxide-upload-zone { margin-top: 18px; border: 2px dashed var(--border); border-radius: 6px; padding: 28px; text-align: center; cursor: pointer; transition: border-color .2s, background .2s; }
@@ -1198,32 +1198,30 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
         <div class="ox-install-section">
           <h4>ZIP File Structure</h4>
           <p class="ox-install-instr">Pack your ZIP to mirror the Oxide directory on the server. Files are extracted to their matching folder automatically.</p>
-          <div class="ox-install-tree">
-<span class="tree-dir">YourPlugin.zip</span>
+          <div class="ox-install-tree"><span class="tree-dir">YourPlugin.zip</span>
 ├── <span class="tree-dir">plugins/</span>
-│   └── YourPlugin.cs          <span class="tree-note">← required — the plugin itself</span>
+│   └── YourPlugin.cs             <span class="tree-note">← required — the plugin itself</span>
 ├── <span class="tree-dir">config/</span>
-│   └── YourPlugin.json        <span class="tree-note">← default config (optional)</span>
+│   └── YourPlugin.json           <span class="tree-note">← default config (optional)</span>
 ├── <span class="tree-dir">data/</span>
-│   └── YourPlugin/            <span class="tree-note">← data files (optional, any structure)</span>
-│       └── presets.json
+│   └── <span class="tree-dir">YourPlugin/</span>              <span class="tree-note">← any files, any depth (optional)</span>
+│       ├── presets.json
+│       └── <span class="tree-dir">images/</span>
+│           └── banner.png        <span class="tree-note">← images supported inside data/</span>
 └── <span class="tree-dir">lang/</span>
     ├── <span class="tree-dir">en/</span>
-    │   └── YourPlugin.json    <span class="tree-note">← English strings (optional)</span>
+    │   └── YourPlugin.json       <span class="tree-note">← English strings (optional)</span>
     └── <span class="tree-dir">ru/</span>
-        └── YourPlugin.json    <span class="tree-note">← other languages (optional)</span>
-          </div>
+        └── YourPlugin.json       <span class="tree-note">← other languages (optional)</span></div>
         </div>
         <div class="ox-install-section">
           <h4>Server Paths</h4>
-          <p class="ox-install-instr">Each folder in the ZIP maps directly to the corresponding Oxide folder on the server:</p>
-          <div class="ox-install-tree">
-<span class="tree-dir">plugins/</span>  → /home/steam/rustserver/oxide/plugins/
-<span class="tree-dir">config/</span>   → /home/steam/rustserver/oxide/config/
-<span class="tree-dir">data/</span>     → /home/steam/rustserver/oxide/data/
-<span class="tree-dir">lang/</span>     → /home/steam/rustserver/oxide/lang/
-          </div>
-          <p class="ox-install-instr" style="margin-top:10px">Anything else in the ZIP (images, READMEs, installers) is ignored. The plugin is reloaded automatically after installation.</p>
+          <p class="ox-install-instr">Each top-level folder maps directly to the Oxide folder on the server. Everything inside is preserved as-is.</p>
+          <div class="ox-install-tree"><span class="tree-dir">plugins/</span>  →  /home/steam/rustserver/oxide/plugins/
+<span class="tree-dir">config/</span>   →  /home/steam/rustserver/oxide/config/
+<span class="tree-dir">data/</span>     →  /home/steam/rustserver/oxide/data/
+<span class="tree-dir">lang/</span>     →  /home/steam/rustserver/oxide/lang/</div>
+          <p class="ox-install-instr" style="margin-top:10px">Files at the ZIP root or in unknown folders (READMEs, installers, etc.) are skipped. The plugin is reloaded automatically after installation.</p>
         </div>
       </div>
     </div>
