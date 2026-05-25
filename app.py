@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.17'
+_APP_VERSION = '1.20.18'
 
 CONFIG = {}
 
@@ -934,6 +934,56 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 .ox-upd-badge { font-size: 10px; color: var(--yellow); margin-left: 5px; }
 .ox-up-to-date { font-size: 10px; color: var(--green); margin-left: 5px; }
 
+/* ── Server tab ── */
+#srv-tab-wrap { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 16px; }
+.srv-section { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.srv-section-hdr {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: var(--bg3); border-bottom: 1px solid var(--border);
+  font-size: 10px; font-weight: bold; letter-spacing: .05em; text-transform: uppercase; color: var(--dim);
+}
+.srv-section-hdr .hdr-spacer { flex: 1; }
+.srv-stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px,1fr)); }
+.srv-stat { padding: 10px 14px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.srv-stat:last-child { border-right: none; }
+.srv-stat-k { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+.srv-stat-v { font-size: 16px; font-weight: bold; }
+.srv-stat-v.ok   { color: var(--green); }
+.srv-stat-v.warn { color: var(--yellow); }
+.cv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cv-table td { padding: 6px 12px; border-bottom: 1px solid rgba(46,49,56,.5); vertical-align: middle; }
+.cv-table tr:last-child td { border-bottom: none; }
+.cv-table tr:hover td { background: rgba(255,255,255,.02); }
+.cv-name { color: var(--dim); font-family: monospace; font-size: 11px; width: 32%; }
+.cv-val  { width: 45%; word-break: break-all; }
+.cv-val input { width: 100%; background: var(--bg3); border: 1px solid var(--accent); border-radius: 3px; color: var(--text); padding: 3px 7px; font: 12px/1.4 inherit; }
+.cv-act  { width: 23%; text-align: right; }
+.cv-ro   { font-size: 10px; color: var(--dim); padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; }
+.srv-sm-btn {
+  background: none; border: 1px solid var(--border); color: var(--dim); cursor: pointer;
+  font: 11px/1 inherit; padding: 3px 8px; border-radius: 3px; transition: border-color .15s, color .15s;
+}
+.srv-sm-btn:hover { border-color: var(--accent); color: var(--text); }
+.srv-sm-btn:disabled { opacity: .4; cursor: default; }
+#srv-cfg-area {
+  display: block; width: 100%; min-height: 200px; max-height: 340px; resize: vertical;
+  background: var(--bg); border: none; color: var(--text);
+  font: 12px/1.6 'Consolas','Menlo','Monaco',monospace; padding: 12px 14px; outline: none;
+}
+#srv-cfg-path { font-size: 10px; color: var(--dim); font-weight: normal; font-family: monospace; margin-right: 4px; }
+.srv-actions { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 14px; }
+.srv-act-btn {
+  padding: 7px 16px; font: 12px/1 inherit; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--bg3); color: var(--text);
+  cursor: pointer; transition: border-color .15s, color .15s, background .15s;
+}
+.srv-act-btn:hover  { border-color: var(--accent); color: var(--accent); }
+.srv-act-btn.danger { border-color: #7f1d1d; color: #fca5a5; }
+.srv-act-btn.danger:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,.06); }
+.srv-act-btn:disabled { opacity: .4; cursor: default; }
+#srv-action-msg { font-size: 11px; color: var(--dim); padding: 0 14px 10px; min-height: 18px; }
+#cv-msg { font-size: 11px; color: var(--dim); font-weight: normal; font-family: inherit; }
+
 /* switch server + logout buttons in header */
 #hdr-switch, #hdr-settings, #hdr-about, #hdr-logout {
   background: none; border: 1px solid var(--border); color: var(--dim);
@@ -1064,6 +1114,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
       <div class="tab" id="t-map" onclick="switchTab('map')">Map</div>
       <div class="tab" id="t-players" onclick="switchTab('players')">Players<span class="tbadge" id="players-badge"></span></div>
       <div class="tab" id="t-oxide" onclick="switchTab('oxide')">Oxide</div>
+      <div class="tab" id="t-server" onclick="switchTab('server')">Server</div>
     </div>
 
     <!-- Console panel -->
@@ -1225,6 +1276,67 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
         </div>
       </div>
     </div>
+
+    <!-- Server tab -->
+    <div class="panel" id="panel-server">
+      <div id="srv-tab-wrap">
+
+        <!-- Stats -->
+        <div class="srv-section">
+          <div class="srv-section-hdr">
+            Server Stats
+            <span class="hdr-spacer"></span>
+            <span id="srv-stats-msg" style="font-size:11px;font-weight:normal;color:var(--dim);margin-right:6px"></span>
+            <button class="srv-sm-btn" onclick="loadServerStats()">&#8635; Refresh</button>
+          </div>
+          <div class="srv-stats-grid">
+            <div class="srv-stat"><div class="srv-stat-k">FPS</div><div class="srv-stat-v" id="ssv-fps">--</div></div>
+            <div class="srv-stat"><div class="srv-stat-k">Memory</div><div class="srv-stat-v" id="ssv-mem">--</div></div>
+            <div class="srv-stat"><div class="srv-stat-k">Players</div><div class="srv-stat-v" id="ssv-players">--</div></div>
+            <div class="srv-stat"><div class="srv-stat-k">Queued</div><div class="srv-stat-v" id="ssv-queued">--</div></div>
+            <div class="srv-stat"><div class="srv-stat-k">Entities</div><div class="srv-stat-v" id="ssv-ents">--</div></div>
+            <div class="srv-stat"><div class="srv-stat-k">Uptime</div><div class="srv-stat-v" id="ssv-uptime">--</div></div>
+            <div class="srv-stat"><div class="srv-stat-k">Game Time</div><div class="srv-stat-v" id="ssv-gametime">--</div></div>
+            <div class="srv-stat"><div class="srv-stat-k">Map</div><div class="srv-stat-v" id="ssv-map" style="font-size:12px;line-height:1.3">--</div></div>
+          </div>
+        </div>
+
+        <!-- ConVars -->
+        <div class="srv-section">
+          <div class="srv-section-hdr">
+            ConVars
+            <span id="cv-msg" style="font-size:11px;font-weight:normal"></span>
+            <span class="hdr-spacer"></span>
+            <button class="srv-sm-btn" onclick="loadConVars()">&#8635; Refresh</button>
+          </div>
+          <table class="cv-table"><tbody id="cv-tbody"></tbody></table>
+        </div>
+
+        <!-- server.cfg -->
+        <div class="srv-section">
+          <div class="srv-section-hdr">
+            server.cfg
+            <span id="srv-cfg-path"></span>
+            <span class="hdr-spacer"></span>
+            <button class="srv-sm-btn" onclick="loadServerCfg()">&#8635; Reload</button>
+            <button class="srv-sm-btn" id="srv-cfg-save-btn" style="margin-left:5px" onclick="saveServerCfg()">Save</button>
+          </div>
+          <textarea id="srv-cfg-area" spellcheck="false" placeholder="Loading…"></textarea>
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="srv-section">
+          <div class="srv-section-hdr">Quick Actions</div>
+          <div class="srv-actions">
+            <button class="srv-act-btn" onclick="doServerAction('save')">&#128190; Save World</button>
+            <button class="srv-act-btn" onclick="doServerAction('gc')">&#9851;&#65039; GC Collect</button>
+            <button class="srv-act-btn danger" onclick="doServerAction('stop')">&#9888;&#65039; Stop Server</button>
+          </div>
+          <div id="srv-action-msg"></div>
+        </div>
+
+      </div>
+    </div>
   </div>
 
   <!-- Sidebar -->
@@ -1308,7 +1420,7 @@ function toggleAscroll() {
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
-const TABS = ['console', 'chat', 'map', 'players', 'oxide'];
+const TABS = ['console', 'chat', 'map', 'players', 'oxide', 'server'];
 
 function switchTab(name) {
   activeTab = name;
@@ -1332,6 +1444,7 @@ function switchTab(name) {
   if (name === 'console' && autoScroll) { const co = $('console-output'); co.scrollTop = co.scrollHeight; }
   if (name === 'players') { if (plSubtab === 'banned') loadBannedTab(); else loadPlayersTab(); }
   if (name === 'oxide') loadOxideTab();
+  if (name === 'server') loadServerTab();
 }
 
 // ── Logging ────────────────────────────────────────────────────────────────
@@ -2995,6 +3108,160 @@ async function oxideHandleFileSelect(input) {
   };
 }
 
+// ── Server Tab ──────────────────────────────────────────────────────────────
+let _conVarsData = null;
+
+async function loadServerTab() {
+  loadServerStats();
+  loadConVars();
+  loadServerCfg();
+}
+
+async function loadServerStats() {
+  const msg = $('srv-stats-msg');
+  try {
+    const r = await fetch('/api/server/info');
+    if (!r.ok) { if (msg) msg.textContent = 'Not connected'; return; }
+    const d = await r.json();
+    if (d.error) { if (msg) msg.textContent = d.error; return; }
+    if (msg) msg.textContent = '';
+    const set = (id, val) => { const el = $(id); if (el) el.textContent = val; };
+    set('ssv-fps', d.Framerate !== undefined ? Math.round(d.Framerate) + ' fps' : '--');
+    const mem = d.Memory;
+    set('ssv-mem', mem !== undefined ? (mem >= 1024 ? (mem/1024).toFixed(1)+' GB' : mem+' MB') : '--');
+    set('ssv-players', d.Players !== undefined ? d.Players + ' / ' + d.MaxPlayers : '--');
+    set('ssv-queued',  d.Queued  !== undefined ? String(d.Queued)  : '--');
+    set('ssv-ents',    d.EntityCount !== undefined ? d.EntityCount.toLocaleString() : '--');
+    if (d.Uptime !== undefined) {
+      const h = Math.floor(d.Uptime / 3600), m = Math.floor((d.Uptime % 3600) / 60);
+      set('ssv-uptime', h + 'h ' + m + 'm');
+    }
+    if (d.GameTime !== undefined) {
+      const gt = parseFloat(d.GameTime);
+      const h = Math.floor(gt), m = Math.round((gt - h) * 60);
+      set('ssv-gametime', h + ':' + String(m).padStart(2,'0'));
+    }
+    set('ssv-map', d.Map || '--');
+  } catch(e) {
+    if (msg) msg.textContent = 'Request failed';
+  }
+}
+
+async function loadConVars() {
+  const msg = $('cv-msg');
+  if (msg) msg.textContent = 'Loading…';
+  try {
+    const r = await fetch('/api/server/convars');
+    const d = await r.json();
+    if (d.error) { if (msg) msg.textContent = d.error; return; }
+    _conVarsData = d;
+    renderConVars();
+    if (msg) msg.textContent = '';
+  } catch(e) {
+    if (msg) msg.textContent = 'Failed';
+  }
+}
+
+function renderConVars() {
+  if (!_conVarsData) return;
+  const tbody = $('cv-tbody');
+  tbody.innerHTML = '';
+  for (const [name, cv] of Object.entries(_conVarsData)) {
+    const tr = document.createElement('tr');
+    const safe = name.replace(/\./g,'_');
+    const actCell = cv.readonly
+      ? `<span class="cv-ro">read-only</span>`
+      : `<button class="srv-sm-btn" onclick="startEditConVar(${JSON.stringify(name)})">Edit</button>`;
+    tr.innerHTML = `<td class="cv-name">${esc(name)}</td>
+      <td class="cv-val"><span id="cvv-${safe}">${esc(cv.value)}</span></td>
+      <td class="cv-act">${actCell}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+function startEditConVar(name) {
+  const safe = name.replace(/\./g,'_');
+  const span = $('cvv-' + safe);
+  if (!span) return;
+  const cur = span.textContent;
+  const valTd = span.parentElement;
+  valTd.innerHTML = `<input type="text" id="cve-${safe}" value="${esc(cur)}">`;
+  const input = $('cve-' + safe);
+  input.focus(); input.select();
+  const actTd = valTd.nextElementSibling;
+  actTd.innerHTML = `<button class="srv-sm-btn" onclick="commitConVar(${JSON.stringify(name)})">&#10003;</button>` +
+    `<button class="srv-sm-btn" style="margin-left:4px" onclick="renderConVars()">&#10007;</button>`;
+  input.onkeydown = e => {
+    if (e.key === 'Enter')  commitConVar(name);
+    if (e.key === 'Escape') renderConVars();
+  };
+}
+
+async function commitConVar(name) {
+  const safe = name.replace(/\./g,'_');
+  const input = $('cve-' + safe);
+  if (!input) return;
+  const value = input.value;
+  const msg = $('cv-msg');
+  if (msg) msg.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/server/convar', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, value})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      if (_conVarsData && _conVarsData[name]) _conVarsData[name].value = value;
+      if (msg) { msg.textContent = d.result || 'Saved'; setTimeout(() => { if (msg) msg.textContent = ''; }, 2500); }
+    } else {
+      if (msg) msg.textContent = d.error || 'Failed';
+    }
+  } catch(e) {
+    if (msg) msg.textContent = 'Failed';
+  }
+  renderConVars();
+}
+
+async function loadServerCfg() {
+  const area = $('srv-cfg-area'), pathEl = $('srv-cfg-path');
+  try {
+    const r = await fetch('/api/server/cfg');
+    const d = await r.json();
+    if (d.error) { area.value = ''; area.placeholder = d.error; return; }
+    area.value = d.content;
+    if (pathEl) pathEl.textContent = d.path;
+  } catch(e) { area.placeholder = 'Failed to load'; }
+}
+
+async function saveServerCfg() {
+  const area = $('srv-cfg-area'), btn = $('srv-cfg-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/server/cfg', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({content: area.value})
+    });
+    const d = await r.json();
+    btn.textContent = d.ok ? 'Saved!' : 'Failed';
+  } catch(e) { btn.textContent = 'Failed'; }
+  setTimeout(() => { btn.textContent = 'Save'; btn.disabled = false; }, 2000);
+}
+
+async function doServerAction(action) {
+  const msgEl = $('srv-action-msg');
+  if (action === 'stop' && !confirm('Stop the game server? It will restart automatically if systemd is configured with Restart=always.')) return;
+  const labels = {save: 'Saving world…', gc: 'Running GC…', stop: 'Stopping server…'};
+  if (msgEl) msgEl.textContent = labels[action] || '…';
+  try {
+    const r = await fetch('/api/server/action', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action})
+    });
+    const d = await r.json();
+    if (msgEl) msgEl.textContent = d.result || (d.ok ? 'Done' : (d.error || 'Failed'));
+  } catch(e) { if (msgEl) msgEl.textContent = 'Request failed'; }
+}
+
 async function oxideReloadAll() {
   $('oxide-status-msg').textContent = 'Reloading all plugins…';
   const btn = $('oxide-reload-all-btn');
@@ -4022,6 +4289,149 @@ async def _handle_oxide_upload(req):
     return web.json_response({'ok': True, 'result': ' | '.join(reload_results), 'warnings': plan['warnings']})
 
 
+# ── Server tab handlers ──────────────────────────────────────────────────────
+
+_CONVAR_DEFS = [
+    # (rcon_name,                label,                  type,    readonly)
+    ('server.hostname',          'Hostname',             'str',   False),
+    ('server.description',       'Description',          'str',   False),
+    ('server.url',               'URL',                  'str',   False),
+    ('server.maxplayers',        'Max Players',          'int',   False),
+    ('fps.limit',                'FPS Limit',            'int',   False),
+    ('server.saveinterval',      'Save Interval (s)',    'int',   False),
+    ('server.tickrate',          'Tick Rate',            'int',   False),
+    ('decay.scale',              'Decay Scale',          'float', False),
+    ('server.pve',               'PVE Mode',             'bool',  False),
+    ('server.radiation',         'Radiation',            'bool',  False),
+    ('server.globalchat',        'Global Chat',          'bool',  False),
+    ('server.stability',         'Stability',            'bool',  False),
+    ('server.respawnresetrange', 'Respawn Reset Range',  'float', False),
+    ('server.itemdespawn',       'Item Despawn (s)',      'int',  False),
+    ('server.corpsedespawn',     'Corpse Despawn (s)',    'int',  False),
+    ('server.worldsize',         'World Size',           'int',   True),
+    ('server.seed',              'Seed',                 'str',   True),
+    ('server.identity',          'Identity',             'str',   True),
+]
+_CONVAR_NAMES   = {d[0] for d in _CONVAR_DEFS}
+_CONVAR_WRITABLE = {d[0] for d in _CONVAR_DEFS if not d[3]}
+
+
+def _parse_convar_val(raw: str) -> str:
+    raw = raw.strip()
+    m = re.search(r':\s*"(.*)"\s*$', raw)
+    if m: return m.group(1)
+    m = re.search(r':\s*(\S+)\s*$', raw)
+    if m: return m.group(1)
+    return raw
+
+
+def _find_server_cfg() -> str:
+    base = '/home/steam/rustserver/server'
+    if os.path.isdir(base):
+        for entry in sorted(os.listdir(base)):
+            candidate = os.path.join(base, entry, 'cfg', 'server.cfg')
+            if os.path.exists(candidate):
+                return candidate
+    return '/home/steam/rustserver/server/rust/cfg/server.cfg'
+
+
+async def _handle_server_info(req):
+    if not _rcon_ok:
+        return web.json_response({'error': 'not connected'}, status=503)
+    try:
+        raw = await _rcon_query('serverinfo', timeout=8.0)
+        return web.json_response(json.loads(raw))
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=503)
+
+
+async def _handle_server_convars(req):
+    if not _rcon_ok:
+        return web.json_response({'error': 'not connected'}, status=503)
+    try:
+        results = await asyncio.gather(*[_rcon_query(d[0]) for d in _CONVAR_DEFS], return_exceptions=True)
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=503)
+    out = {}
+    for (name, label, typ, ro), raw in zip(_CONVAR_DEFS, results):
+        if isinstance(raw, Exception):
+            out[name] = {'value': '', 'label': label, 'type': typ, 'readonly': ro, 'error': str(raw)}
+        else:
+            out[name] = {'value': _parse_convar_val(raw), 'label': label, 'type': typ, 'readonly': ro}
+    return web.json_response(out)
+
+
+async def _handle_server_convar_set(req):
+    d = await req.json()
+    name  = d.get('name',  '').strip()
+    value = str(d.get('value', '')).strip()
+    if name not in _CONVAR_WRITABLE:
+        return web.json_response({'error': 'Unknown or read-only convar'}, status=400)
+    if not _rcon_ok:
+        return web.json_response({'error': 'not connected'}, status=503)
+    # Auto-quote strings that contain spaces
+    typ = next(x[2] for x in _CONVAR_DEFS if x[0] == name)
+    if typ == 'str' and ' ' in value and not (value.startswith('"') and value.endswith('"')):
+        value = f'"{value}"'
+    try:
+        result = await _rcon_query(f'{name} {value}', timeout=8.0)
+        return web.json_response({'ok': True, 'result': result.strip()})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=503)
+
+
+async def _handle_server_cfg_get(req):
+    path = await asyncio.to_thread(_find_server_cfg)
+    try:
+        def _read():
+            if not os.path.exists(path): return ''
+            with open(path) as f: return f.read()
+        content = await asyncio.to_thread(_read)
+        return web.json_response({'content': content, 'path': path})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def _handle_server_cfg_post(req):
+    d = await req.json()
+    content = d.get('content', '')
+    path = await asyncio.to_thread(_find_server_cfg)
+    try:
+        def _write():
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + '.tmp'
+            with open(tmp, 'w') as f: f.write(content)
+            os.replace(tmp, path)
+        await asyncio.to_thread(_write)
+        return web.json_response({'ok': True, 'path': path})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def _handle_server_action(req):
+    d = await req.json()
+    action = d.get('action', '')
+    if action == 'save':
+        try:
+            result = await _rcon_query('server.save', timeout=20.0)
+            return web.json_response({'ok': True, 'result': result.strip() or 'World saved'})
+        except Exception as e:
+            return web.json_response({'error': str(e)}, status=503)
+    elif action == 'gc':
+        try:
+            result = await _rcon_query('gc.collect', timeout=10.0)
+            return web.json_response({'ok': True, 'result': result.strip() or 'GC collected'})
+        except Exception as e:
+            return web.json_response({'error': str(e)}, status=503)
+    elif action == 'stop':
+        try:
+            result = await _rcon_query('server.stop', timeout=10.0)
+            return web.json_response({'ok': True, 'result': result.strip() or 'Server stopping…'})
+        except Exception as e:
+            return web.json_response({'error': str(e)}, status=503)
+    return web.json_response({'error': 'Unknown action'}, status=400)
+
+
 async def _cleanup_loop():
     while True:
         await asyncio.sleep(300)
@@ -4154,6 +4564,12 @@ def main():
     app.router.add_post('/login',                 _handle_login_post)
     app.router.add_get('/logout',                 _handle_logout)
     app.router.add_post('/api/settings/password', _handle_settings_password)
+    app.router.add_get('/api/server/info',        _handle_server_info)
+    app.router.add_get('/api/server/convars',     _handle_server_convars)
+    app.router.add_post('/api/server/convar',     _handle_server_convar_set)
+    app.router.add_get('/api/server/cfg',         _handle_server_cfg_get)
+    app.router.add_post('/api/server/cfg',        _handle_server_cfg_post)
+    app.router.add_post('/api/server/action',     _handle_server_action)
     app.on_startup.append(_startup)
     app.on_cleanup.append(_cleanup)
 
