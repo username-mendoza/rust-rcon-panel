@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.13'
+_APP_VERSION = '1.20.14'
 
 CONFIG = {}
 
@@ -1267,6 +1267,7 @@ function switchTab(name) {
     if (rconOk && Object.keys(mapPlayers).length === 0) refreshMap();
     // ResizeObserver fires automatically when panel becomes visible, triggering drawMap()
   }
+  if (name === 'console' && autoScroll) { const co = $('console-output'); co.scrollTop = co.scrollHeight; }
   if (name === 'players') { if (plSubtab === 'banned') loadBannedTab(); else loadPlayersTab(); }
   if (name === 'oxide') loadOxideTab();
 }
