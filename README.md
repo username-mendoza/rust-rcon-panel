@@ -4,7 +4,7 @@ A self-hosted web management panel for Rust dedicated servers. Single-file Pytho
 
 ```
   .-.
- (☠.☠)   RCON · Console · Chat · Map · Players · Bans · Oxide
+ (☠.☠)   RCON · Console · Chat · Map · Players · Bans · Oxide · Server
   )=(
  /   \
 ```
@@ -16,19 +16,27 @@ A self-hosted web management panel for Rust dedicated servers. Single-file Pytho
 - **RCON console** — send commands, see live server output
 - **Chat tab** — monitor and send in-game chat
 - **Interactive map** — canvas-based terrain overlay with monument markers, player positions, tier filters, pan & zoom
-- **Live world info** — seed and world size read live from RCON on connect, rustmaps.com deep-link auto-populated
+  - Live world info — seed and world size read live from RCON, rustmaps.com deep-link auto-populated
+  - **Deep Sea indicator** — badge shows zone open/closed state and countdown timer; portal rings mark all four cardinal entrances on the map edge
 - **Players tab** — online players with ping and right-click action menu (kick, ban, give item, mute, teleport); offline players show full session history and playtime
 - **Ban management** — view ban list, unban players with one click
 - **Oxide tab** — full plugin manager:
   - Lists all plugins — loaded (green) and unloaded/on-disk (grey)
-  - Per-plugin Reload, Unload, and Load buttons
-  - Reload All
-  - **Update checker** — queries ServerArmour aggregator for uMod, Codefling, and Chaos plugins; shows available version next to installed version
+  - Per-plugin Reload, Unload, and Load buttons; Reload All
+  - **Update checker** — queries ServerArmour aggregator for uMod, Codefling, and Chaos plugins
   - **Auto-update** — one-click download and reload for uMod plugins
-  - **Manual upload** — upload a `.cs` or `.zip` file from your PC; ZIP upload shows an integrity check confirmation modal listing exactly what will be written (plugin files + language files) before committing anything to disk
-- **Multi-server profiles** — save multiple RCON connections, auto-connects to last-used server on login
-- **Remote panel support** — point a secondary panel at the primary to share map image and monuments over HTTP
-- **About popup** — version, Python, aiohttp info accessible from the UI
+  - **Manual upload** — upload a `.cs` or `.zip`; ZIP shows integrity check modal before writing anything; config file conflicts prompt keep/overwrite per file
+- **Server tab** — full server management:
+  - **Stats** — FPS, memory, players, queued, entity count, uptime, game time, map name
+  - **ConVars** — 26 server variables grouped by category (Identity / Performance / World / Gameplay / Decay / Anti-Hack); bool convars render as toggle switches with instant save
+  - **server.cfg editor** — read and write the config file directly from the browser; auto-detects identity directory
+  - **Quick Actions** — Save World, GC Collect, Stop Server, Restart Server (dialog with configurable countdown), Map Wipe, Full Wipe
+- **Wipe system** — background task with live progress log:
+  - Stops server → updates Rust (steamcmd) → updates Oxide → updates uMod plugins → deletes map/save files → clears Backpacks mod data → updates seed in `start.sh` → starts server
+  - **Map wipe** keeps player blueprints; **Full wipe** removes blueprints, deaths, states, relationships
+  - Requires typing `WIPE` to unlock; optional random seed checkbox
+- **Multi-server profiles** — save multiple RCON connections, switch without restart, auto-connects to last-used on login
+- **Remote panel support** — secondary panel fetches map image and monuments from primary over HTTP
 - **HTTPS** — self-signed, custom certificate, or Let's Encrypt
 - **Session auth** — login with panel password; sessions expire after 24 hours
 - **Encrypted storage** — RCON passwords encrypted with Fernet; web password hashed with PBKDF2-HMAC-SHA256 (260k iterations)
@@ -100,15 +108,15 @@ EOF
 sudo bash setup.sh
 ```
 
-On first start, the panel hashes the plaintext password and replaces it in `config.json`. Passwords can be changed from the Settings panel in the UI.
+On first start, the panel hashes the plaintext password and replaces it in `config.json`. Passwords can be changed from the Settings overlay in the UI.
 
 ---
 
 ## Remote Panel (secondary / read-only view)
 
-You can run a second panel instance — on a different machine or container — that displays the same map without direct filesystem access to the game server. The secondary panel fetches the map image and monument data from the primary panel over HTTP.
+You can run a second panel instance — on a different machine or container — that displays the same map without direct filesystem access to the game server.
 
-**Primary panel** — no config change required. The endpoints `/mapimg` and `/monuments` are public (no auth needed), so the secondary can pull from them freely.
+**Primary panel** — no config change required. The endpoints `/mapimg` and `/monuments` are public (no auth needed).
 
 **Secondary panel `config.json`:**
 
@@ -128,9 +136,9 @@ You can run a second panel instance — on a different machine or container — 
 }
 ```
 
-- `image_url` — points to the primary panel's `/mapimg` endpoint. The secondary fetches and caches the PNG at startup, with automatic retry if the primary is temporarily unreachable.
-- Monuments are fetched automatically from `/monuments` on the same host as `image_url`.
-- World seed and size are still read live from RCON if the secondary has RCON configured; otherwise set them in `config.json`.
+- `image_url` — points to the primary panel's `/mapimg` endpoint; fetched and cached at startup with automatic retry.
+- Monuments are fetched from `/monuments` on the same host as `image_url`.
+- World seed and size are read live from RCON if configured; otherwise set them in `config.json`.
 
 ---
 
@@ -182,11 +190,34 @@ Profiles are stored encrypted in `profiles.json`. Add and switch servers from th
 
 On first login with no saved profiles, the panel prompts for server connection details directly. The last-used profile is remembered across restarts.
 
-Each profile stores:
-- Display name
-- Host / IP
-- RCON port
-- RCON password (Fernet-encrypted)
+Each profile stores: display name, host/IP, RCON port, RCON password (Fernet-encrypted).
+
+---
+
+## Wipe
+
+The wipe dialog (Server tab → Quick Actions) runs a background task visible as a live progress log. It:
+
+1. Stops the server gracefully via RCON
+2. Updates Rust via steamcmd
+3. Updates Oxide from the latest GitHub release
+4. Updates all uMod plugins that have available updates
+5. Deletes map/save files (and blueprint/death/state files for full wipe)
+6. Clears per-player Backpacks mod `.json` files if present
+7. Updates `-server.seed` in `start.sh` to the chosen seed
+8. Starts the server
+
+To allow the panel to restart the server after a wipe, add `web.sudo_password` to `config.json`:
+
+```json
+{
+  "web": {
+    "sudo_password": "your-root-password"
+  }
+}
+```
+
+Without it the panel falls back to running `start.sh` directly via `nohup`, which may not work if the server requires `systemctl`.
 
 ---
 
@@ -205,12 +236,21 @@ The rendered map and monument data are saved to:
 /home/steam/rustserver/oxide/data/MapRenderer/monuments.json
 ```
 
-These paths should match `map.image_path` in `config.json`. The panel serves the image at `/mapimg` and monument data at `/monuments` (both unauthenticated — safe for LAN use; do not expose raw to the public internet without a reverse proxy).
+These paths should match `map.image_path` in `config.json`. The panel serves the image at `/mapimg` and monument data at `/monuments` (both unauthenticated).
 
 To re-render manually via RCON console:
 ```
 maprender.generate
 ```
+
+### Deep Sea
+
+When the Naval Update Deep Sea zone is supported by the server, the Map tab shows:
+
+- A badge at the bottom-left of the map canvas: `⚓ DEEP SEA  ●  OPEN  closes in 1h 23m` (teal when open, grey when closed)
+- Small portal rings at the N/S/E/W edges of the map; the active portal glows teal with a "Deep Sea" label when the zone is open
+
+No configuration required — the panel queries `deepsea.status` automatically on connect and every 30 seconds while the Map tab is active.
 
 ---
 
@@ -239,10 +279,11 @@ Both services are enabled for autostart on boot.
 ```json
 {
   "web": {
-    "host":      "0.0.0.0",
-    "port":      443,
-    "http_port": 80,
-    "password":  "pbkdf2:...",
+    "host":          "0.0.0.0",
+    "port":          443,
+    "http_port":     80,
+    "password":      "pbkdf2:...",
+    "sudo_password": "root-password-for-systemctl",
     "ssl": {
       "mode": "self_signed | custom | letsencrypt | none",
       "cert": "/path/to/cert.pem",
