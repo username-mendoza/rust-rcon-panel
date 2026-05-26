@@ -477,12 +477,6 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 #map-canvas { position: absolute; top: 0; left: 0; display: block; cursor: crosshair; }
 
 /* Map info bar */
-#map-infobar {
-  position: absolute; bottom: 6px; left: 6px; z-index: 5;
-  background: rgba(17,18,21,0.82); border: 1px solid rgba(46,49,56,0.8);
-  border-radius: 4px; padding: 4px 8px; font-size: 10px;
-  color: rgba(200,204,214,0.65); pointer-events: none; line-height: 1.5;
-}
 
 #map-tooltip {
   position: absolute; pointer-events: none; display: none;
@@ -1192,7 +1186,6 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
           <div class="tt-grid"></div>
           <div class="tt-id"></div>
         </div>
-        <div id="map-infobar"></div>
       </div>
     </div>
 
@@ -1996,11 +1989,6 @@ function fetchWorldCfg() {
 }
 
 function updateMapInfoBar() {
-  // Bottom-left infobar on canvas
-  const bar = $('map-infobar');
-  if (bar) bar.innerHTML = (WORLD_SIZE ? 'Size: <b>' + WORLD_SIZE + 'm</b>' : '') +
-    (MAP_SEED ? ' &nbsp;· Seed: <b>' + MAP_SEED + '</b>' : '');
-
   // Sidebar map info
   const setSI = (id, v) => { const el = $(id); if (el) el.textContent = v; };
   setSI('msi-size',  WORLD_SIZE ? WORLD_SIZE + 'm' : '--');
@@ -2272,12 +2260,12 @@ function drawMap() {
     ctx.font = 'bold 10px Consolas,monospace';
     const tw = ctx.measureText(label).width;
     const bx = 10, by = H - 30, bw = tw + 18, bh = 20;
-    ctx.fillStyle   = ds.open ? 'rgba(4,44,55,0.90)'   : 'rgba(18,22,28,0.82)';
-    ctx.strokeStyle = ds.open ? 'rgba(34,211,238,0.7)' : 'rgba(70,90,110,0.45)';
-    ctx.lineWidth   = 1;
+    ctx.fillStyle   = ds.open ? 'rgba(4,44,55,0.95)'  : 'rgba(30,35,42,0.92)';
+    ctx.strokeStyle = ds.open ? '#22d3ee'              : '#4a6070';
+    ctx.lineWidth   = 1.5;
     ctx.fillRect(bx, by, bw, bh);
     ctx.strokeRect(bx, by, bw, bh);
-    ctx.fillStyle = ds.open ? '#22d3ee' : 'rgba(130,160,180,0.85)';
+    ctx.fillStyle = ds.open ? '#22d3ee' : '#8ab0c0';
     ctx.fillText(label, bx + 9, by + 14);
   }
 }
@@ -2315,10 +2303,13 @@ function fmtSecs(s) {
 }
 
 function pollDeepSea() {
-  if (!rconOk) return;
-  fetch('/api/server/deepsea').then(r => r.json()).then(d => {
-    if (!d.error) { _deepSeaData = d; if (activeTab === 'map') drawMap(); }
-  }).catch(() => {});
+  fetch('/api/server/deepsea').then(r => r.text()).then(t => {
+    console.log('[DeepSea] raw:', t.slice(0, 200));
+    try {
+      const d = JSON.parse(t);
+      if (!d.error) { _deepSeaData = d; if (activeTab === 'map') drawMap(); }
+    } catch(e) { console.warn('[DeepSea] parse failed:', e, t.slice(0,80)); }
+  }).catch(e => console.warn('[DeepSea] fetch error', e));
 }
 
 function rerenderMap() {
@@ -2679,6 +2670,7 @@ function onMsg(e) {
     setTimeout(() => sendBg('env.time'),   1200);
     setTimeout(() => sendBg('location'),   1500);
     fetchWorldCfg();
+    setTimeout(pollDeepSea, 2000);
   } else if (d.type === 'disconnected') {
     setOk(false);
     log('RCON disconnected, retrying…', 'sys');
@@ -2690,7 +2682,7 @@ function onMsg(e) {
     } else if (d.connected) {
       hideLoginOverlay();
       setTimeout(()=>sendBg('status'),300); setTimeout(()=>sendBg('serverinfo'),600); setTimeout(()=>sendBg('playerlist'),900); setTimeout(()=>sendBg('env.time'),1200); setTimeout(()=>sendBg('location'),1500);
-      fetchWorldCfg();
+      fetchWorldCfg(); setTimeout(pollDeepSea, 2000);
     }
   } else if (d.type === 'rcon') {
     const msg  = (d.data && d.data.Message) || '';
@@ -5074,7 +5066,7 @@ def _parse_deepsea_status(text: str) -> dict:
 
 
 async def _handle_deepsea(req):
-    if not _rcon_ws:
+    if not _rcon_ok:
         return web.json_response({'error': 'Not connected'}, status=503)
     try:
         raw = await _rcon_query('deepsea.status', timeout=8.0)
