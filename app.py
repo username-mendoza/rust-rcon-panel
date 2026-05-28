@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.33'
+_APP_VERSION = '1.20.34'
 
 CONFIG = {}
 
@@ -3719,7 +3719,7 @@ async function oxideCheckUpdates() {
     oxideUpdates = await r.json();
     const outdated = oxideData.plugins.filter(p => {
       const u = oxideUpdates[p.slug || p.name];
-      return u && u.found && u.latest && u.latest !== p.version;
+      return u && u.found && u.latest && versionGt(u.latest, p.version);
     }).length;
     renderOxideTab();
     $('oxide-status-msg').textContent = outdated
