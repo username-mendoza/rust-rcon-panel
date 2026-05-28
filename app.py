@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.32'
+_APP_VERSION = '1.20.33'
 
 CONFIG = {}
 
@@ -5020,25 +5020,36 @@ async def _server_is_running() -> bool:
         return False
 
 
-async def _systemctl_stop_server(log) -> bool:
+async def _systemctl_run(cmd: str, log, timeout: int = 60) -> bool:
+    import shlex
+    sudo_pass = CONFIG.get('web', {}).get('sudo_password', '')
+    if sudo_pass:
+        shell_cmd = f'echo {shlex.quote(sudo_pass)} | su -c {shlex.quote(cmd)} root'
+    else:
+        shell_cmd = cmd
     try:
-        proc = await asyncio.create_subprocess_exec(
-            'systemctl', 'stop', 'rust-server',
+        proc = await asyncio.create_subprocess_shell(
+            shell_cmd,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
-        _, err = await asyncio.wait_for(proc.communicate(), timeout=60)
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         if proc.returncode == 0:
-            log('systemctl stop rust-server — OK', 'ok')
             return True
-        else:
-            log(f'systemctl stop failed: {err.decode().strip() or proc.returncode}', 'warn')
-            return False
+        log(f'{cmd} failed: {err.decode().strip() or proc.returncode}', 'warn')
+        return False
     except asyncio.TimeoutError:
-        log('systemctl stop timed out', 'warn')
+        log(f'{cmd} timed out', 'warn')
         return False
     except Exception as e:
-        log(f'systemctl stop error: {e}', 'warn')
+        log(f'{cmd} error: {e}', 'warn')
         return False
+
+
+async def _systemctl_stop_server(log) -> bool:
+    ok = await _systemctl_run('systemctl stop rust-server', log, timeout=60)
+    if ok:
+        log('systemctl stop rust-server — OK', 'ok')
+    return ok
 
 
 async def _run_wipe_task(wipe_type: str, seed, opts: dict):
@@ -5201,18 +5212,8 @@ async def _run_wipe_task(wipe_type: str, seed, opts: dict):
 
         # 8. Start server
         log('Starting server…', 'step')
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                'systemctl', 'start', 'rust-server',
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            _, err = await asyncio.wait_for(proc.communicate(), timeout=30)
-            if proc.returncode == 0:
-                log('Server started', 'ok')
-            else:
-                log(f'systemctl start failed: {err.decode().strip() or proc.returncode}', 'warn')
-        except Exception as e:
-            log(f'Could not start server: {e}', 'warn')
+        if await _systemctl_run('systemctl start rust-server', log, timeout=30):
+            log('Server started', 'ok')
 
         _wipe_state['ok'] = True
         log(('Full' if wipe_type == 'full' else 'Map') + ' Wipe complete!', 'ok')
@@ -5367,18 +5368,8 @@ async def _run_update_task(opts: dict):
                 log(f'Plugin check failed: {e}', 'err')
 
         log('Starting server…', 'step')
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                'systemctl', 'start', 'rust-server',
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            _, err = await asyncio.wait_for(proc.communicate(), timeout=30)
-            if proc.returncode == 0:
-                log('Server started', 'ok')
-            else:
-                log(f'systemctl start failed: {err.decode().strip() or proc.returncode}', 'warn')
-        except Exception as e:
-            log(f'Could not start server: {e}', 'warn')
+        if await _systemctl_run('systemctl start rust-server', log, timeout=30):
+            log('Server started', 'ok')
 
         _wipe_state['ok'] = True
         log('Update complete!', 'ok')
