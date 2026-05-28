@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.29'
+_APP_VERSION = '1.20.30'
 
 CONFIG = {}
 
@@ -3549,8 +3549,16 @@ function _addWipeCopyBtn() {
   btn.onclick = () => {
     const prog = $('wipe-progress');
     if (!prog) return;
-    const lines = [...prog.querySelectorAll('.wipe-log-line')].map(el => el.textContent.trim()).join('\n');
-    navigator.clipboard.writeText(lines).then(() => { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy Log'; }, 1500); });
+    const text = [...prog.querySelectorAll('.wipe-log-line')].map(el => el.textContent.trim()).join('\n');
+    const done = () => { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy Log'; }, 1500); };
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(done);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); document.body.removeChild(ta); done();
+    }
   };
   const btns = document.querySelector('.modal-btns');
   if (btns) btns.insertBefore(btn, btns.firstChild);
@@ -5012,6 +5020,32 @@ async def _server_is_running() -> bool:
         return False
 
 
+async def _systemctl_stop_server(log) -> bool:
+    sudo_pass = CONFIG.get('web', {}).get('sudo_password', '')
+    if not sudo_pass:
+        log('sudo_password not set — cannot stop via systemctl; using RCON only', 'warn')
+        return False
+    try:
+        import shlex
+        proc = await asyncio.create_subprocess_shell(
+            f'echo {shlex.quote(sudo_pass)} | su -c "systemctl stop rust-server" root',
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=60)
+        if proc.returncode == 0:
+            log('systemctl stop rust-server — OK', 'ok')
+            return True
+        else:
+            log(f'systemctl stop exited {proc.returncode}', 'warn')
+            return False
+    except asyncio.TimeoutError:
+        log('systemctl stop timed out', 'warn')
+        return False
+    except Exception as e:
+        log(f'systemctl stop failed: {e}', 'warn')
+        return False
+
+
 async def _run_wipe_task(wipe_type: str, seed, opts: dict):
     import zipfile, io, shlex
 
@@ -5026,12 +5060,13 @@ async def _run_wipe_task(wipe_type: str, seed, opts: dict):
         if _rcon_ok:
             try:
                 await _rcon_query('server.stop', timeout=10.0)
-                log('Stop command sent', 'ok')
+                log('RCON stop sent', 'ok')
             except Exception as e:
                 log(f'RCON stop: {e}', 'warn')
         else:
             log('RCON not connected — server may already be down', 'warn')
-        log('Waiting for server to shut down…', 'info')
+        await _systemctl_stop_server(log)
+        log('Waiting for server to go offline…', 'info')
         for _i in range(60):
             await asyncio.sleep(2)
             if not await _server_is_running():
@@ -5244,7 +5279,8 @@ async def _run_update_task(opts: dict):
                 log(f'RCON stop: {e}', 'warn')
         else:
             log('RCON not connected — server may already be down', 'warn')
-        log('Waiting for server to shut down…', 'info')
+        await _systemctl_stop_server(log)
+        log('Waiting for server to go offline…', 'info')
         for _i in range(60):
             await asyncio.sleep(2)
             if not await _server_is_running():
