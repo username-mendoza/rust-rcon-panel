@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.36'
+_APP_VERSION = '1.20.37'
 
 CONFIG = {}
 
@@ -5279,23 +5279,36 @@ async def _run_update_task(opts: dict):
             if not steamcmd:
                 log('steamcmd.sh not found — skipping', 'warn')
             else:
+                _steam_env = {**os.environ, 'HOME': '/home/steam'}
+                _rust_ok = False
                 try:
+                    # warm up steamcmd (updates itself, establishes Steam connection)
+                    p0 = await asyncio.create_subprocess_exec(
+                        steamcmd, '+quit',
+                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                        env=_steam_env,
+                    )
+                    await asyncio.wait_for(p0.communicate(), timeout=60)
                     proc = await asyncio.create_subprocess_exec(
                         steamcmd, '+login', 'anonymous',
                         '+force_install_dir', _RUST_DIR, '+app_update', '258550', '+quit',
                         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                        env=_steam_env,
                     )
                     await asyncio.wait_for(proc.communicate(), timeout=600)
                     if proc.returncode == 0:
                         log('Rust updated', 'ok')
+                        _rust_ok = True
                     else:
-                        log(f'SteamCMD exited {proc.returncode} — aborting to avoid version mismatch', 'err')
-                        return
+                        log(f'SteamCMD exited {proc.returncode} — skipping Oxide to avoid mismatch', 'err')
                 except asyncio.TimeoutError:
-                    log('SteamCMD timed out — aborting', 'err')
-                    return
+                    log('SteamCMD timed out — skipping Oxide to avoid mismatch', 'err')
                 except Exception as e:
-                    log(f'SteamCMD failed: {e} — aborting', 'err')
+                    log(f'SteamCMD failed: {e} — skipping Oxide to avoid mismatch', 'err')
+                if not _rust_ok:
+                    log('Starting server with existing files…', 'step')
+                    if await _systemctl_run('systemctl start rust-server', log, timeout=30):
+                        log('Server started', 'ok')
                     return
 
         if opts.get('update_oxide', True):
