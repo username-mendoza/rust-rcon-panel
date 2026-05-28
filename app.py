@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.26'
+_APP_VERSION = '1.20.27'
 
 CONFIG = {}
 
@@ -5147,7 +5147,7 @@ async def _run_wipe_task(wipe_type: str, seed, opts: dict):
 
         # 8. Start server
         log('Starting server…', 'step')
-        sudo_pass = _cfg.get('web', {}).get('sudo_password', '')
+        sudo_pass = CONFIG.get('web', {}).get('sudo_password', '')
         if sudo_pass:
             try:
                 proc = await asyncio.create_subprocess_shell(
@@ -5310,7 +5310,7 @@ async def _run_update_task(opts: dict):
                 log(f'Plugin check failed: {e}', 'err')
 
         log('Starting server…', 'step')
-        sudo_pass = _cfg.get('web', {}).get('sudo_password', '')
+        sudo_pass = CONFIG.get('web', {}).get('sudo_password', '')
         if sudo_pass:
             try:
                 proc = await asyncio.create_subprocess_shell(
