@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.28'
+_APP_VERSION = '1.20.29'
 
 CONFIG = {}
 
@@ -5000,6 +5000,18 @@ def _version_gt(a: str, b: str) -> bool:
     return False
 
 
+async def _server_is_running() -> bool:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            'systemctl', 'is-active', 'rust-server',
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        return out.decode().strip() == 'active'
+    except Exception:
+        return False
+
+
 async def _run_wipe_task(wipe_type: str, seed, opts: dict):
     import zipfile, io, shlex
 
@@ -5021,12 +5033,13 @@ async def _run_wipe_task(wipe_type: str, seed, opts: dict):
             log('RCON not connected — server may already be down', 'warn')
         log('Waiting for server to shut down…', 'info')
         for _i in range(60):
-            await asyncio.sleep(1)
-            if not _rcon_ok:
+            await asyncio.sleep(2)
+            if not await _server_is_running():
                 log('Server offline', 'ok')
                 break
         else:
-            log('Server still online after 60 s — proceeding anyway', 'warn')
+            log('Server still running after 120 s — aborting to avoid data loss', 'err')
+            return
 
         # 2. Update Rust
         if opts.get('update_rust'):
@@ -5233,12 +5246,13 @@ async def _run_update_task(opts: dict):
             log('RCON not connected — server may already be down', 'warn')
         log('Waiting for server to shut down…', 'info')
         for _i in range(60):
-            await asyncio.sleep(1)
-            if not _rcon_ok:
+            await asyncio.sleep(2)
+            if not await _server_is_running():
                 log('Server offline', 'ok')
                 break
         else:
-            log('Server still online after 60 s — proceeding anyway', 'warn')
+            log('Server still running after 120 s — aborting to avoid data loss', 'err')
+            return
 
         if opts.get('update_rust', True):
             log('Updating Rust server…', 'step')
