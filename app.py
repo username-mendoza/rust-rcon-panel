@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.27'
+_APP_VERSION = '1.20.28'
 
 CONFIG = {}
 
@@ -3597,7 +3597,8 @@ async function startUpdate() {
   };
   $('wipe-cfg').style.display     = 'none';
   $('wipe-progress').style.display = 'block';
-  $('wipe-do').disabled    = true;
+  const _updDo = $('wipe-do');
+  if (_updDo) { _updDo.disabled = true; _updDo.textContent = 'Updating…'; }
   $('wipe-cancel').textContent = 'Close';
   $('wipe-cancel').onclick = closeWipeModal;
   $('wipe-x').style.display = 'none';
@@ -3656,7 +3657,11 @@ async function pollWipeStatus() {
     renderWipeLog(d.log || []);
     if (d.done) {
       clearInterval(_wipePollTimer);
+      const doBtn = $('wipe-do');
+      if (doBtn) doBtn.textContent = d.ok ? 'Finished' : 'Failed';
       $('wipe-cancel').textContent = 'Close';
+      _verCheckTs = 0;
+      setTimeout(() => { if (activeTab === 'server') loadServerStats(); }, 5000);
     }
   } catch(e) { /* ignore transient failures */ }
 }
@@ -5014,8 +5019,14 @@ async def _run_wipe_task(wipe_type: str, seed, opts: dict):
                 log(f'RCON stop: {e}', 'warn')
         else:
             log('RCON not connected — server may already be down', 'warn')
-        log('Waiting 10 s for shutdown…', 'info')
-        await asyncio.sleep(10)
+        log('Waiting for server to shut down…', 'info')
+        for _i in range(60):
+            await asyncio.sleep(1)
+            if not _rcon_ok:
+                log('Server offline', 'ok')
+                break
+        else:
+            log('Server still online after 60 s — proceeding anyway', 'warn')
 
         # 2. Update Rust
         if opts.get('update_rust'):
@@ -5220,8 +5231,14 @@ async def _run_update_task(opts: dict):
                 log(f'RCON stop: {e}', 'warn')
         else:
             log('RCON not connected — server may already be down', 'warn')
-        log('Waiting 10 s for shutdown…', 'info')
-        await asyncio.sleep(10)
+        log('Waiting for server to shut down…', 'info')
+        for _i in range(60):
+            await asyncio.sleep(1)
+            if not _rcon_ok:
+                log('Server offline', 'ok')
+                break
+        else:
+            log('Server still online after 60 s — proceeding anyway', 'warn')
 
         if opts.get('update_rust', True):
             log('Updating Rust server…', 'step')
