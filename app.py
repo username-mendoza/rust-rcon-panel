@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.34'
+_APP_VERSION = '1.20.35'
 
 CONFIG = {}
 
@@ -3231,7 +3231,7 @@ function _verBadge(installed, latest) {
 
 function _applyVerBadges() {
   const gv = $('ssv-gamever'), ov = $('ssv-oxidever');
-  if (gv && _installedGameVer) gv.innerHTML = _verBadge(_installedGameVer, _latestGameProto);
+  if (gv && _installedGameVer) gv.textContent = _installedGameVer;
   if (ov && _installedOxideVer) ov.innerHTML = _verBadge(_installedOxideVer, _latestOxideVer);
 }
 
@@ -4820,9 +4820,6 @@ async def _handle_server_versions(req):
                     tag = data.get('tag_name', '').lstrip('v')
                     if tag:
                         result['oxide_latest'] = tag
-                        m = re.search(r'(\d+)$', tag)
-                        if m:
-                            result['rust_protocol_latest'] = m.group(1)
     except Exception:
         pass
     _versions_cache = result
