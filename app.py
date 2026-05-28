@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.22'
+_APP_VERSION = '1.20.23'
 
 CONFIG = {}
 
@@ -1321,6 +1321,8 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
             <div class="srv-stat"><div class="srv-stat-k">Uptime</div><div class="srv-stat-v" id="ssv-uptime">--</div></div>
             <div class="srv-stat"><div class="srv-stat-k">Game Time</div><div class="srv-stat-v" id="ssv-gametime">--</div></div>
             <div class="srv-stat"><div class="srv-stat-k">Map</div><div class="srv-stat-v" id="ssv-map" style="font-size:12px;line-height:1.3">--</div></div>
+            <div class="srv-stat"><div class="srv-stat-k">Game Ver</div><div class="srv-stat-v" id="ssv-gamever">--</div></div>
+            <div class="srv-stat"><div class="srv-stat-k">Oxide Ver</div><div class="srv-stat-v" id="ssv-oxidever" style="font-size:12px;line-height:1.3">--</div></div>
           </div>
         </div>
 
@@ -1355,6 +1357,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
             <button class="srv-act-btn" onclick="doServerAction('gc')">&#9851;&#65039; GC Collect</button>
             <button class="srv-act-btn danger" onclick="doServerAction('stop')">&#9888;&#65039; Stop Server</button>
             <button class="srv-act-btn" onclick="showRestartDialog()" style="border-color:#6366f1;color:#a5b4fc">&#8635; Restart Server</button>
+            <button class="srv-act-btn" onclick="showUpdateDialog()" style="border-color:#0891b2;color:#67e8f9">&#8679; Update Server</button>
             <button class="srv-act-btn danger" onclick="showWipeDialog('map')" style="border-color:#b45309;color:#fcd34d">&#128257; Map Wipe</button>
             <button class="srv-act-btn danger" onclick="showWipeDialog('full')">&#9888;&#65039; Full Wipe</button>
           </div>
@@ -1468,7 +1471,7 @@ function switchTab(name) {
     pollDeepSea();
     // ResizeObserver fires automatically when panel becomes visible, triggering drawMap()
   }
-  if (name === 'console' && autoScroll) { const co = $('console-output'); co.scrollTop = co.scrollHeight; }
+  if (name === 'console') { setTimeout(() => { const co = $('console-output'); co.scrollTop = co.scrollHeight; }, 0); }
   if (name === 'players') { if (plSubtab === 'banned') loadBannedTab(); else loadPlayersTab(); }
   if (name === 'oxide') loadOxideTab();
   if (name === 'server') loadServerTab();
@@ -3242,6 +3245,8 @@ async function loadServerStats() {
       set('ssv-gametime', h + ':' + String(m).padStart(2,'0'));
     }
     set('ssv-map', d.Map || '--');
+    set('ssv-gamever',  d._GameVersion  || '--');
+    set('ssv-oxidever', d._OxideVersion || '--');
   } catch(e) {
     if (msg) msg.textContent = 'Request failed';
   }
@@ -3508,6 +3513,59 @@ function closeWipeModal() {
   clearInterval(_wipePollTimer);
   const o = $('modal-overlay');
   if (o) o.remove();
+}
+
+function showUpdateDialog() {
+  const overlay = document.createElement('div');
+  overlay.id = 'modal-overlay';
+  overlay.innerHTML = `<div id="wipe-modal" class="modal-box" style="max-width:440px;width:90vw;max-height:85vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-shrink:0">
+      <h3 style="margin:0;color:#67e8f9">&#8679; Update Server</h3>
+      <button id="wipe-x" style="background:none;border:none;color:var(--dim);font-size:18px;cursor:pointer;padding:0 4px" title="Cancel">&times;</button>
+    </div>
+    <div id="wipe-cfg" style="flex:1;overflow-y:auto;min-height:0">
+      <div class="wipe-what"><b>Stop</b> the game server<br><b>Update</b> selected components<br><b>Restart</b> the game server<br><span style="color:var(--dim);font-size:11px">No files are deleted — all game settings kept</span></div>
+      <div style="margin:12px 0 6px;font-size:11px;color:var(--dim);font-weight:bold;letter-spacing:.04em;text-transform:uppercase">Components</div>
+      <label class="wipe-opt"><input type="checkbox" id="upd-rust" checked> Update Rust server (SteamCMD)</label>
+      <label class="wipe-opt"><input type="checkbox" id="upd-oxide" checked> Update Oxide</label>
+      <label class="wipe-opt"><input type="checkbox" id="upd-plugins" checked> Update auto-updatable plugins</label>
+    </div>
+    <div id="wipe-progress" style="display:none;flex:1;overflow-y:auto;min-height:120px;padding:8px 0"></div>
+    <div class="modal-btns" style="flex-shrink:0;margin-top:14px">
+      <button id="wipe-do" class="modal-btn ok" style="background:#0891b2;border-color:#0891b2"
+        onclick="startUpdate()">Start Update</button>
+      <button id="wipe-cancel" class="modal-btn secondary" onclick="closeWipeModal()">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  $('wipe-x').onclick = closeWipeModal;
+  overlay.onclick = e => { if (e.target === overlay) closeWipeModal(); };
+}
+
+async function startUpdate() {
+  const opts = {
+    update_rust:    $('upd-rust').checked,
+    update_oxide:   $('upd-oxide').checked,
+    update_plugins: $('upd-plugins').checked,
+  };
+  $('wipe-cfg').style.display     = 'none';
+  $('wipe-progress').style.display = 'block';
+  $('wipe-do').disabled    = true;
+  $('wipe-cancel').textContent = 'Close';
+  $('wipe-cancel').onclick = closeWipeModal;
+  $('wipe-x').style.display = 'none';
+  _wipeLastLen = 0;
+  appendWipeLine({msg: 'Starting server update…', type: 'step'});
+  try {
+    await fetch('/api/server/update', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({opts})
+    });
+  } catch(e) {
+    appendWipeLine({msg: 'Request failed: ' + e, type: 'err'});
+    return;
+  }
+  _wipePollTimer = setInterval(pollWipeStatus, 1500);
 }
 
 async function startWipe(wipeType) {
@@ -4655,8 +4713,22 @@ async def _handle_server_info(req):
     if not _rcon_ok:
         return web.json_response({'error': 'not connected'}, status=503)
     try:
-        raw = await _rcon_query('serverinfo', timeout=8.0)
-        return web.json_response(json.loads(raw))
+        info_raw, ver_raw, oxide_raw = await asyncio.gather(
+            _rcon_query('serverinfo', timeout=8.0),
+            _rcon_query('version', timeout=5.0),
+            _rcon_query('oxide.version', timeout=5.0),
+            return_exceptions=True,
+        )
+        d = json.loads(info_raw) if not isinstance(info_raw, Exception) else {}
+        if not isinstance(ver_raw, Exception):
+            m = re.search(r'[Pp]rotocol[:\s]+(\d+)', ver_raw) or re.search(r'(\d{4,})', ver_raw)
+            if m:
+                d['_GameVersion'] = m.group(1)
+        if not isinstance(oxide_raw, Exception):
+            m = re.search(r'(\d+\.\d+[\d.]*)', oxide_raw)
+            if m:
+                d['_OxideVersion'] = m.group(1)
+        return web.json_response(d)
     except Exception as e:
         return web.json_response({'error': str(e)}, status=503)
 
@@ -5035,6 +5107,152 @@ async def _handle_wipe_status(req):
     })
 
 
+async def _run_update_task(opts: dict):
+    import zipfile, io, shlex
+
+    def log(msg, typ='info'):
+        _wipe_state['log'].append({'msg': msg, 'type': typ})
+
+    hdrs = {'User-Agent': f'RconPanel/{_APP_VERSION}'}
+    try:
+        log('Stopping game server…', 'step')
+        if _rcon_ok:
+            try:
+                await _rcon_query('server.stop', timeout=10.0)
+                log('Stop command sent', 'ok')
+            except Exception as e:
+                log(f'RCON stop: {e}', 'warn')
+        else:
+            log('RCON not connected — server may already be down', 'warn')
+        log('Waiting 10 s for shutdown…', 'info')
+        await asyncio.sleep(10)
+
+        if opts.get('update_rust', True):
+            log('Updating Rust server…', 'step')
+            steamcmd = os.path.join(os.path.expanduser('~steam'), 'steamcmd', 'steamcmd.sh')
+            if not os.path.exists(steamcmd):
+                log('steamcmd.sh not found — skipping', 'warn')
+            else:
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        steamcmd, '+login', 'anonymous',
+                        '+force_install_dir', _RUST_DIR, '+app_update', '258550', '+quit',
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                    )
+                    await asyncio.wait_for(proc.communicate(), timeout=600)
+                    log('Rust updated' if proc.returncode == 0 else f'SteamCMD exited {proc.returncode}',
+                        'ok' if proc.returncode == 0 else 'warn')
+                except asyncio.TimeoutError:
+                    log('SteamCMD timed out', 'err')
+                except Exception as e:
+                    log(f'SteamCMD failed: {e}', 'err')
+
+        if opts.get('update_oxide', True):
+            log('Updating Oxide…', 'step')
+            try:
+                async with _http_session.get(_OXIDE_RELEASE, timeout=aiohttp.ClientTimeout(total=120), headers=hdrs) as resp:
+                    if resp.status != 200:
+                        log(f'Oxide download failed: HTTP {resp.status}', 'err')
+                    else:
+                        data = await resp.read()
+                        await asyncio.to_thread(lambda: zipfile.ZipFile(io.BytesIO(data)).extractall(_RUST_DIR))
+                        log('Oxide updated', 'ok')
+            except Exception as e:
+                log(f'Oxide update failed: {e}', 'err')
+
+        if opts.get('update_plugins', True):
+            log('Checking plugin updates…', 'step')
+            try:
+                uc_map = await asyncio.to_thread(_load_uc_map)
+                umod = [(slug, info) for slug, info in uc_map.items() if 'umod.org' in info.get('url', '')]
+                if not umod:
+                    log('No uMod plugins tracked in UpdateChecker.json', 'info')
+                else:
+                    sem = asyncio.Semaphore(6)
+                    async def _check(slug, info):
+                        async with sem:
+                            url = info.get('url', '')
+                            if not url: return None
+                            try:
+                                async with _http_session.get(
+                                    f'https://serverarmour.com/api/v3/marketplace/search?plugin={url}',
+                                    timeout=aiohttp.ClientTimeout(total=12), headers=hdrs) as r:
+                                    if r.status != 200: return None
+                                    d = await r.json(content_type=None)
+                                if d.get('status') != 200 or not d.get('data'): return None
+                                best = d['data'][0]
+                                if best.get('marketplace') != 'uMod': return None
+                                latest = best.get('latestVersion', '')
+                                if _version_gt(latest, info.get('version', '')):
+                                    return (slug, f'https://umod.org/plugins/{slug}.cs', latest)
+                            except Exception:
+                                return None
+                    checks = await asyncio.gather(*[_check(s, i) for s, i in umod])
+                    to_update = [c for c in checks if c]
+                    if not to_update:
+                        log('All tracked plugins up to date', 'info')
+                    else:
+                        updated = failed = 0
+                        for slug, dl_url, latest in to_update:
+                            try:
+                                async with _http_session.get(dl_url, timeout=aiohttp.ClientTimeout(total=30), headers=hdrs) as r:
+                                    if r.status != 200: raise Exception(f'HTTP {r.status}')
+                                    content = await r.read()
+                                dest = os.path.join(_RUST_DIR, 'oxide', 'plugins', f'{slug}.cs')
+                                tmp  = dest + '.tmp'
+                                def _w(c=content, t=tmp, d=dest):
+                                    with open(t, 'wb') as fh: fh.write(c)
+                                    os.replace(t, d)
+                                await asyncio.to_thread(_w)
+                                log(f'{slug} → {latest}', 'ok')
+                                updated += 1
+                            except Exception as e:
+                                log(f'Failed {slug}: {e}', 'warn')
+                                failed += 1
+                        log(f'{updated} updated, {failed} failed', 'info')
+            except Exception as e:
+                log(f'Plugin check failed: {e}', 'err')
+
+        log('Starting server…', 'step')
+        sudo_pass = _cfg.get('web', {}).get('sudo_password', '')
+        if sudo_pass:
+            try:
+                proc = await asyncio.create_subprocess_shell(
+                    f'echo {shlex.quote(sudo_pass)} | su -c "systemctl start rust-server" root',
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                await asyncio.wait_for(proc.communicate(), timeout=30)
+                log('Server started via systemd' if proc.returncode == 0 else 'systemctl start failed — run manually', 'ok' if proc.returncode == 0 else 'warn')
+            except Exception as e:
+                log(f'Start failed ({e}) — run: systemctl start rust-server', 'warn')
+        else:
+            try:
+                await asyncio.create_subprocess_shell(
+                    f'nohup bash {shlex.quote(_RUST_START_SH)} > /tmp/rust_update_start.log 2>&1 &'
+                )
+                log('Server process launched', 'ok')
+            except Exception as e:
+                log(f'Could not launch server: {e}', 'warn')
+
+        _wipe_state['ok'] = True
+        log('Update complete!', 'ok')
+    except Exception as e:
+        log(f'Unexpected error: {e}', 'err')
+    finally:
+        _wipe_state['running'] = False
+        _wipe_state['done']    = True
+
+
+async def _handle_update(req):
+    if _wipe_state.get('running'):
+        return web.json_response({'error': 'Task already in progress'}, status=409)
+    d = await req.json()
+    opts = d.get('opts', {})
+    _wipe_state.update({'running': True, 'done': False, 'ok': False, 'log': []})
+    asyncio.get_event_loop().create_task(_run_update_task(opts))
+    return web.json_response({'ok': True})
+
+
 def _parse_deepsea_status(text: str) -> dict:
     result: dict = {'open': False, 'busy': False, 'timeToNextOpening': 0, 'timeToWipe': 0,
                     'portalDirection': '', 'portals': []}
@@ -5215,6 +5433,7 @@ def main():
     app.router.add_post('/api/server/action',     _handle_server_action)
     app.router.add_post('/api/server/wipe',       _handle_wipe)
     app.router.add_get('/api/server/wipe/status', _handle_wipe_status)
+    app.router.add_post('/api/server/update',     _handle_update)
     app.router.add_get('/api/server/deepsea',     _handle_deepsea)
     app.on_startup.append(_startup)
     app.on_cleanup.append(_cleanup)
