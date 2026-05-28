@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.35'
+_APP_VERSION = '1.20.36'
 
 CONFIG = {}
 
@@ -1326,6 +1326,21 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
           </div>
         </div>
 
+        <!-- Quick Actions -->
+        <div class="srv-section">
+          <div class="srv-section-hdr">Quick Actions</div>
+          <div class="srv-actions">
+            <button class="srv-act-btn" onclick="doServerAction('save')">&#128190; Save World</button>
+            <button class="srv-act-btn" onclick="doServerAction('gc')">&#9851;&#65039; GC Collect</button>
+            <button class="srv-act-btn danger" onclick="doServerAction('stop')">&#9888;&#65039; Stop Server</button>
+            <button class="srv-act-btn" onclick="showRestartDialog()" style="border-color:#6366f1;color:#a5b4fc">&#8635; Restart Server</button>
+            <button class="srv-act-btn" onclick="showUpdateDialog()" style="border-color:#0891b2;color:#67e8f9">&#8679; Update Server</button>
+            <button class="srv-act-btn danger" onclick="showWipeDialog('map')" style="border-color:#b45309;color:#fcd34d">&#128257; Map Wipe</button>
+            <button class="srv-act-btn danger" onclick="showWipeDialog('full')">&#9888;&#65039; Full Wipe</button>
+          </div>
+          <div id="srv-action-msg"></div>
+        </div>
+
         <!-- ConVars -->
         <div class="srv-section">
           <div class="srv-section-hdr">
@@ -1347,21 +1362,6 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
             <button class="srv-sm-btn" id="srv-cfg-save-btn" style="margin-left:5px" onclick="saveServerCfg()">Save</button>
           </div>
           <textarea id="srv-cfg-area" spellcheck="false" placeholder="Loading…"></textarea>
-        </div>
-
-        <!-- Quick Actions -->
-        <div class="srv-section">
-          <div class="srv-section-hdr">Quick Actions</div>
-          <div class="srv-actions">
-            <button class="srv-act-btn" onclick="doServerAction('save')">&#128190; Save World</button>
-            <button class="srv-act-btn" onclick="doServerAction('gc')">&#9851;&#65039; GC Collect</button>
-            <button class="srv-act-btn danger" onclick="doServerAction('stop')">&#9888;&#65039; Stop Server</button>
-            <button class="srv-act-btn" onclick="showRestartDialog()" style="border-color:#6366f1;color:#a5b4fc">&#8635; Restart Server</button>
-            <button class="srv-act-btn" onclick="showUpdateDialog()" style="border-color:#0891b2;color:#67e8f9">&#8679; Update Server</button>
-            <button class="srv-act-btn danger" onclick="showWipeDialog('map')" style="border-color:#b45309;color:#fcd34d">&#128257; Map Wipe</button>
-            <button class="srv-act-btn danger" onclick="showWipeDialog('full')">&#9888;&#65039; Full Wipe</button>
-          </div>
-          <div id="srv-action-msg"></div>
         </div>
 
       </div>
