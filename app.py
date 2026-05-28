@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.23'
+_APP_VERSION = '1.20.24'
 
 CONFIG = {}
 
@@ -3220,6 +3220,35 @@ async function loadServerTab() {
   loadServerCfg();
 }
 
+let _installedGameVer = '', _installedOxideVer = '';
+
+function _verBadge(installed, latest) {
+  if (!installed || installed === '--' || !latest) return esc(installed || '--');
+  const upToDate = installed === latest;
+  if (upToDate) return esc(installed) + ' <span style="color:#4ade80;font-size:10px">&#10003;</span>';
+  return esc(installed) + ' <span style="color:#fb923c;font-size:10px">→ ' + esc(latest) + '</span>';
+}
+
+function _applyVerBadges() {
+  const gv = $('ssv-gamever'), ov = $('ssv-oxidever');
+  if (gv && _installedGameVer) gv.innerHTML = _verBadge(_installedGameVer, _latestGameProto);
+  if (ov && _installedOxideVer) ov.innerHTML = _verBadge(_installedOxideVer, _latestOxideVer);
+}
+
+let _latestOxideVer = '', _latestGameProto = '', _verCheckTs = 0;
+async function checkVersionUpdates() {
+  if (Date.now() - _verCheckTs < 3600000) { _applyVerBadges(); return; }
+  try {
+    const r = await fetch('/api/server/versions');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.oxide_latest)        _latestOxideVer   = d.oxide_latest;
+    if (d.rust_protocol_latest) _latestGameProto  = d.rust_protocol_latest;
+    _verCheckTs = Date.now();
+    _applyVerBadges();
+  } catch(e) {}
+}
+
 async function loadServerStats() {
   const msg = $('srv-stats-msg');
   try {
@@ -3245,8 +3274,10 @@ async function loadServerStats() {
       set('ssv-gametime', h + ':' + String(m).padStart(2,'0'));
     }
     set('ssv-map', d.Map || '--');
-    set('ssv-gamever',  d._GameVersion  || '--');
-    set('ssv-oxidever', d._OxideVersion || '--');
+    _installedGameVer  = d._GameVersion  || '';
+    _installedOxideVer = d._OxideVersion || '';
+    _applyVerBadges();
+    checkVersionUpdates();
   } catch(e) {
     if (msg) msg.textContent = 'Request failed';
   }
@@ -4733,6 +4764,37 @@ async def _handle_server_info(req):
         return web.json_response({'error': str(e)}, status=503)
 
 
+_versions_cache: dict = {}
+_versions_cache_ts: float = 0.0
+
+async def _handle_server_versions(req):
+    global _versions_cache, _versions_cache_ts
+    import time as _time
+    if _time.monotonic() - _versions_cache_ts < 3600 and _versions_cache:
+        return web.json_response(_versions_cache)
+    result: dict = {}
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.get(
+                'https://api.github.com/repos/OxideMod/Oxide.Rust/releases/latest',
+                headers={'User-Agent': 'rust-rcon-panel/1.0'},
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    tag = data.get('tag_name', '').lstrip('v')
+                    if tag:
+                        result['oxide_latest'] = tag
+                        m = re.search(r'(\d+)$', tag)
+                        if m:
+                            result['rust_protocol_latest'] = m.group(1)
+    except Exception:
+        pass
+    _versions_cache = result
+    _versions_cache_ts = _time.monotonic()
+    return web.json_response(result)
+
+
 async def _handle_server_convars(req):
     if not _rcon_ok:
         return web.json_response({'error': 'not connected'}, status=503)
@@ -5426,6 +5488,7 @@ def main():
     app.router.add_get('/logout',                 _handle_logout)
     app.router.add_post('/api/settings/password', _handle_settings_password)
     app.router.add_get('/api/server/info',        _handle_server_info)
+    app.router.add_get('/api/server/versions',    _handle_server_versions)
     app.router.add_get('/api/server/convars',     _handle_server_convars)
     app.router.add_post('/api/server/convar',     _handle_server_convar_set)
     app.router.add_get('/api/server/cfg',         _handle_server_cfg_get)
