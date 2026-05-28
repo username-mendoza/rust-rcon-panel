@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.24'
+_APP_VERSION = '1.20.25'
 
 CONFIG = {}
 
@@ -4894,6 +4894,17 @@ async def _handle_server_action(req):
 _RUST_DIR      = '/home/steam/rustserver'
 _RUST_START_SH = '/home/steam/rustserver/start.sh'
 _OXIDE_RELEASE = 'https://github.com/OxideMod/Oxide.Rust/releases/latest/download/Oxide.Rust-linux.zip'
+_STEAMCMD_CANDIDATES = [
+    '/home/steam/steamcmd/steamcmd.sh',
+    '/home/steam/.local/share/Steam/steamcmd/steamcmd.sh',
+    '/usr/games/steamcmd',
+]
+
+def _find_steamcmd() -> str | None:
+    for p in _STEAMCMD_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    return None
 
 _wipe_state: dict = {'running': False, 'done': True, 'ok': False, 'log': []}
 
@@ -4986,8 +4997,8 @@ async def _run_wipe_task(wipe_type: str, seed, opts: dict):
         # 2. Update Rust
         if opts.get('update_rust'):
             log('Updating Rust server…', 'step')
-            steamcmd = os.path.join(os.path.expanduser('~steam'), 'steamcmd', 'steamcmd.sh')
-            if not os.path.exists(steamcmd):
+            steamcmd = _find_steamcmd()
+            if not steamcmd:
                 log('steamcmd.sh not found — skipping', 'warn')
             else:
                 try:
@@ -5191,8 +5202,8 @@ async def _run_update_task(opts: dict):
 
         if opts.get('update_rust', True):
             log('Updating Rust server…', 'step')
-            steamcmd = os.path.join(os.path.expanduser('~steam'), 'steamcmd', 'steamcmd.sh')
-            if not os.path.exists(steamcmd):
+            steamcmd = _find_steamcmd()
+            if not steamcmd:
                 log('steamcmd.sh not found — skipping', 'warn')
             else:
                 try:
