@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.25'
+_APP_VERSION = '1.20.26'
 
 CONFIG = {}
 
@@ -3540,6 +3540,22 @@ function wipeRandToggle() {
   $('wipe-seed-row').style.display = rand ? 'none' : 'flex';
 }
 
+function _addWipeCopyBtn() {
+  if ($('wipe-copy-btn')) return;
+  const btn = document.createElement('button');
+  btn.id = 'wipe-copy-btn';
+  btn.className = 'modal-btn secondary';
+  btn.textContent = 'Copy Log';
+  btn.onclick = () => {
+    const prog = $('wipe-progress');
+    if (!prog) return;
+    const lines = [...prog.querySelectorAll('.wipe-log-line')].map(el => el.textContent.trim()).join('\n');
+    navigator.clipboard.writeText(lines).then(() => { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy Log'; }, 1500); });
+  };
+  const btns = document.querySelector('.modal-btns');
+  if (btns) btns.insertBefore(btn, btns.firstChild);
+}
+
 function closeWipeModal() {
   clearInterval(_wipePollTimer);
   const o = $('modal-overlay');
@@ -3585,6 +3601,9 @@ async function startUpdate() {
   $('wipe-cancel').textContent = 'Close';
   $('wipe-cancel').onclick = closeWipeModal;
   $('wipe-x').style.display = 'none';
+  const overlay = $('modal-overlay');
+  if (overlay) overlay.onclick = null;
+  _addWipeCopyBtn();
   _wipeLastLen = 0;
   appendWipeLine({msg: 'Starting server update…', type: 'step'});
   try {
@@ -3614,6 +3633,9 @@ async function startWipe(wipeType) {
   $('wipe-cancel').textContent = 'Close';
   $('wipe-cancel').onclick = closeWipeModal;
   $('wipe-x').style.display = 'none';
+  const _wipeOverlay = $('modal-overlay');
+  if (_wipeOverlay) _wipeOverlay.onclick = null;
+  _addWipeCopyBtn();
   appendWipeLine({msg: 'Starting ' + (wipeType === 'full' ? 'Full' : 'Map') + ' Wipe…', type: 'step'});
   try {
     await fetch('/api/server/wipe', {
@@ -4904,7 +4926,8 @@ def _find_steamcmd() -> str | None:
     for p in _STEAMCMD_CANDIDATES:
         if os.path.exists(p):
             return p
-    return None
+    import shutil
+    return shutil.which('steamcmd')
 
 _wipe_state: dict = {'running': False, 'done': True, 'ok': False, 'log': []}
 
