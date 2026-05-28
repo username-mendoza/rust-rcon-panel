@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.31'
+_APP_VERSION = '1.20.32'
 
 CONFIG = {}
 
@@ -5011,11 +5011,11 @@ def _version_gt(a: str, b: str) -> bool:
 async def _server_is_running() -> bool:
     try:
         proc = await asyncio.create_subprocess_exec(
-            'systemctl', 'is-active', 'rust-server',
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            'pgrep', '-x', 'RustDedicated',
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         )
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-        return out.decode().strip() == 'active'
+        await asyncio.wait_for(proc.communicate(), timeout=5)
+        return proc.returncode == 0
     except Exception:
         return False
 
@@ -5288,12 +5288,17 @@ async def _run_update_task(opts: dict):
                         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
                     )
                     await asyncio.wait_for(proc.communicate(), timeout=600)
-                    log('Rust updated' if proc.returncode == 0 else f'SteamCMD exited {proc.returncode}',
-                        'ok' if proc.returncode == 0 else 'warn')
+                    if proc.returncode == 0:
+                        log('Rust updated', 'ok')
+                    else:
+                        log(f'SteamCMD exited {proc.returncode} — aborting to avoid version mismatch', 'err')
+                        return
                 except asyncio.TimeoutError:
-                    log('SteamCMD timed out', 'err')
+                    log('SteamCMD timed out — aborting', 'err')
+                    return
                 except Exception as e:
-                    log(f'SteamCMD failed: {e}', 'err')
+                    log(f'SteamCMD failed: {e} — aborting', 'err')
+                    return
 
         if opts.get('update_oxide', True):
             log('Updating Oxide…', 'step')
