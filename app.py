@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.39'
+_APP_VERSION = '1.20.40'
 
 CONFIG = {}
 
@@ -1022,7 +1022,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 <body>
 
 <!-- Login / Server selection overlay -->
-<div id="login-overlay">
+<div id="login-overlay" class="hidden">
   <div id="login-card">
     <div id="login-hdr">
       <svg width="20" height="20" viewBox="0 0 32 36" fill="none" xmlns="http://www.w3.org/2000/svg"><ellipse cx="16" cy="13" rx="11" ry="11" fill="#cd4214"/><circle cx="11.5" cy="12" r="2.8" fill="#1a1c20"/><circle cx="20.5" cy="12" r="2.8" fill="#1a1c20"/><rect x="10" y="22" width="12" height="2" rx="1" fill="#1a1c20" opacity=".35"/><rect x="11.5" y="24" width="3" height="7" rx="1.5" fill="#cd4214"/><rect x="17.5" y="24" width="3" height="7" rx="1.5" fill="#cd4214"/><rect x="9" y="30" width="14" height="2.5" rx="1.2" fill="#cd4214" opacity=".4"/></svg>
@@ -1491,18 +1491,47 @@ function autoClass(text) {
   if (/\berror\b|exception|failed/i.test(l)) return 'err';
   return '';
 }
+const _LOG_KEY = 'rcon_console_log', _LOG_MAX = 200;
+let _logBuf = [];
+try { _logBuf = JSON.parse(localStorage.getItem(_LOG_KEY) || '[]'); } catch(e) { _logBuf = []; }
+
+function _logSave() {
+  try { localStorage.setItem(_LOG_KEY, JSON.stringify(_logBuf.slice(-_LOG_MAX))); } catch(e) {}
+}
+function _logAppendDom(t, cls, text) {
+  const d = document.createElement('div');
+  d.className = 'ln ' + cls;
+  d.innerHTML = '<span class="ln-t">'+t+'</span><span class="ln-m">'+esc(text)+'</span>';
+  co.appendChild(d);
+}
+(function _restoreLog() {
+  const f = document.createDocumentFragment();
+  for (const e of _logBuf) {
+    const d = document.createElement('div');
+    d.className = 'ln ' + (e.c || '');
+    d.innerHTML = '<span class="ln-t">'+esc(e.t)+'</span><span class="ln-m">'+esc(e.m)+'</span>';
+    f.appendChild(d);
+  }
+  co.appendChild(f);
+  co.scrollTop = co.scrollHeight;
+})();
+
 function log(text, cls) {
   cls = cls || autoClass(String(text));
   const lines = String(text).split('\n');
   const f = document.createDocumentFragment();
   for (const line of lines) {
     if (!line.trim() && lines.length > 1) continue;
+    const t = ts();
     const d = document.createElement('div');
     d.className = 'ln ' + cls;
-    d.innerHTML = '<span class="ln-t">'+ts()+'</span><span class="ln-m">'+esc(line)+'</span>';
+    d.innerHTML = '<span class="ln-t">'+t+'</span><span class="ln-m">'+esc(line)+'</span>';
     f.appendChild(d);
+    _logBuf.push({t, c: cls, m: line});
   }
   co.appendChild(f);
+  if (_logBuf.length > _LOG_MAX * 1.5) { _logBuf = _logBuf.slice(-_LOG_MAX); }
+  _logSave();
   if (autoScroll) co.scrollTop = co.scrollHeight;
 }
 
@@ -1510,7 +1539,7 @@ co.addEventListener('scroll', () => {
   const atBottom = co.scrollTop + co.clientHeight >= co.scrollHeight - 30;
   if (atBottom !== autoScroll) setAutoScroll(atBottom);
 });
-$('clear-btn').onclick = () => { co.innerHTML = ''; };
+$('clear-btn').onclick = () => { co.innerHTML = ''; _logBuf = []; _logSave(); };
 
 // ── Connection state ───────────────────────────────────────────────────────
 function setOk(ok) {
