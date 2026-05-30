@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.37'
+_APP_VERSION = '1.20.38'
 
 CONFIG = {}
 
@@ -1471,7 +1471,7 @@ function switchTab(name) {
     pollDeepSea();
     // ResizeObserver fires automatically when panel becomes visible, triggering drawMap()
   }
-  if (name === 'console') { setTimeout(() => { const co = $('console-output'); co.scrollTop = co.scrollHeight; }, 0); }
+  if (name === 'console') { requestAnimationFrame(() => { const co = $('console-output'); co.scrollTop = co.scrollHeight; }); }
   if (name === 'players') { if (plSubtab === 'banned') loadBannedTab(); else loadPlayersTab(); }
   if (name === 'oxide') loadOxideTab();
   if (name === 'server') loadServerTab();
