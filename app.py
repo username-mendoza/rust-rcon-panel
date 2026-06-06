@@ -472,6 +472,11 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 #map-resetview:hover { border-color: var(--dim); color: var(--text); }
 #map-updated { color: var(--dim); margin-left: auto; font-size: 11px; }
 #map-coords  { color: var(--dim); font-size: 11px; font-family: 'Consolas','Menlo',monospace; min-width: 120px; }
+#map-layer-toggle { display: none; gap: 0; border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
+#map-layer-toggle button { background: var(--bg3); border: none; border-left: 1px solid var(--border); color: var(--dim); padding: 3px 10px; font-size: 11px; font-family: inherit; cursor: pointer; transition: all .15s; }
+#map-layer-toggle button:first-child { border-left: none; }
+#map-layer-toggle button.active { background: var(--accent); color: #fff; }
+#map-layer-toggle button:not(.active):hover { color: var(--text); }
 
 #map-canvas-wrap { flex: 1; position: relative; overflow: hidden; background: #0a120a; }
 #map-canvas { position: absolute; top: 0; left: 0; display: block; cursor: crosshair; }
@@ -1171,6 +1176,10 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
         <button id="map-refresh" onclick="refreshMap()">&#8635; Players</button>
         <button id="map-rerender" onclick="rerenderMap()" title="Re-render map image via MapRenderer plugin">&#128247; Re-render</button>
         <button id="map-resetview" onclick="resetView()" title="Reset zoom and pan (or double-click map)">&#8982; Reset</button>
+        <div id="map-layer-toggle">
+          <button id="map-layer-surface" class="active" onclick="setMapLayer('surface')">Surface</button>
+          <button id="map-layer-underground" onclick="setMapLayer('underground')">Underground</button>
+        </div>
         <span id="map-player-count">0 players</span>
         <span id="map-coords"></span>
         <a id="map-rmlink" href="https://rustmaps.com" target="_blank"
@@ -2061,20 +2070,45 @@ function worldToCanvas(x, z) {
   ];
 }
 
+let mapLayer = 'surface';  // 'surface' | 'underground'
+
+function setMapLayer(layer) {
+  if (mapLayer === layer) return;
+  mapLayer = layer;
+  $('map-layer-surface').classList.toggle('active', layer === 'surface');
+  $('map-layer-underground').classList.toggle('active', layer === 'underground');
+  mapImg = null; mapImgRetries = 0;
+  loadMapImg();
+}
+
+let _undergndCheckRetries = 0;
+function checkUndergroundAvailable() {
+  fetch('/mapimg/underground', {method:'HEAD'}).then(r => {
+    const el = $('map-layer-toggle');
+    if (el) el.style.display = r.ok ? 'flex' : 'none';
+    if (!r.ok && _undergndCheckRetries < 6) {
+      _undergndCheckRetries++;
+      setTimeout(checkUndergroundAvailable, 30000);
+    }
+  }).catch(()=>{});
+}
+
 function loadMapImg() {
+  const url = mapLayer === 'underground' ? '/mapimg/underground?' + Date.now() : '/mapimg?' + Date.now();
   const img = new Image();
   img.onload = () => { mapImg = img; mapImgRetries = 0; drawMap(); };
   img.onerror = () => {
     mapImg = null; drawMap();
-    if (mapImgRetries < 4) { mapImgRetries++; setTimeout(loadMapImg, 4000); }
+    if (mapLayer === 'surface' && mapImgRetries < 4) { mapImgRetries++; setTimeout(loadMapImg, 4000); }
   };
-  img.src = '/mapimg?' + Date.now();
+  img.src = url;
 }
 
 function initMapIfNeeded() {
   if (!mapNeedsInit) return;
   mapNeedsInit = false;
   loadMapImg();
+  checkUndergroundAvailable();
   fetch('/api/monuments').then(r=>r.json()).then(data => {
     mapMonuments = data || [];
     updateMapInfoBar();
@@ -2105,7 +2139,12 @@ function drawMap() {
     ctx.font = '12px Consolas,monospace';
     ctx.fillStyle = 'rgba(255,255,255,0.22)';
     ctx.textAlign = 'center';
-    if (!MAP_IMG_CONFIGURED) {
+    if (mapLayer === 'underground') {
+      ctx.fillText('No underground tunnel map yet…', mx0 + size/2, my0 + 26);
+      ctx.font = '10px Consolas,monospace';
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fillText('Run  maprender.generate  in the console to generate it', mx0 + size/2, my0 + 42);
+    } else if (!MAP_IMG_CONFIGURED) {
       ctx.fillText('No map image — click "rustmaps.com ↗" above to get one', mx0 + size/2, my0 + 26);
       ctx.font = '10px Consolas,monospace';
       ctx.fillStyle = 'rgba(255,255,255,0.12)';
@@ -2350,7 +2389,7 @@ function rerenderMap() {
   btn.disabled = true;
   btn.textContent = '⏳ Rendering...';
   send('maprender.generate');
-  // Poll for updated image — plugin takes ~5-15s to render + save
+  // Poll for updated image — plugin takes ~5-30s to render + save
   let polls = 0;
   const poll = setInterval(() => {
     polls++;
@@ -2360,6 +2399,9 @@ function rerenderMap() {
       clearInterval(poll);
       btn.disabled = false;
       btn.textContent = '📷 Re-render';
+      // Recheck underground availability after re-render
+      _undergndCheckRetries = 0;
+      setTimeout(checkUndergroundAvailable, 5000);
     }
   }, 5000);
 }
@@ -3827,6 +3869,8 @@ _mapimg_cache_ct: str = 'image/jpeg'
 _mapimg_path_cache: bytes = None
 _mapimg_path_cache_ct: str = 'image/png'
 _mapimg_path_mtime: float = 0.0
+_mapimg_underground_cache: bytes = None
+_mapimg_underground_mtime: float = 0.0
 _favicon_cache: str = ''
 _http_session: aiohttp.ClientSession = None
 
@@ -3836,7 +3880,7 @@ async def _auth(request, handler):
     pwd = CONFIG.get('web', {}).get('password', '')
     if not pwd:
         return await handler(request)
-    if request.path in ('/login', '/favicon.svg', '/mapimg', '/monuments'):
+    if request.path in ('/login', '/favicon.svg', '/mapimg', '/mapimg/underground', '/monuments'):
         return await handler(request)
     # CSRF: reject state-changing requests from foreign origins
     if request.method not in ('GET', 'HEAD', 'OPTIONS'):
@@ -4163,6 +4207,20 @@ async def _handle_mapimg(req):
         return web.Response(body=_mapimg_path_cache, content_type=_mapimg_path_cache_ct)
     if _mapimg_cache:
         return web.Response(body=_mapimg_cache, content_type=_mapimg_cache_ct)
+    return web.Response(status=404)
+
+
+async def _handle_mapimg_underground(req):
+    global _mapimg_underground_cache, _mapimg_underground_mtime
+    path = CONFIG.get('map', {}).get('image_path', '')
+    if path:
+        upath = str(Path(path).parent / 'underground.png')
+        if os.path.exists(upath):
+            mtime = os.path.getmtime(upath)
+            if _mapimg_underground_cache is None or mtime != _mapimg_underground_mtime:
+                _mapimg_underground_cache = await asyncio.to_thread(Path(upath).read_bytes)
+                _mapimg_underground_mtime = mtime
+            return web.Response(body=_mapimg_underground_cache, content_type='image/png')
     return web.Response(status=404)
 
 
@@ -5653,6 +5711,7 @@ def main():
     app.router.add_get('/monuments',              _handle_monuments_public)
     app.router.add_get('/api/players',            _handle_players_api)
     app.router.add_get('/mapimg',                 _handle_mapimg)
+    app.router.add_get('/mapimg/underground',     _handle_mapimg_underground)
     app.router.add_get('/api/mapimg/refresh',     _handle_mapimg_refresh)
     app.router.add_get('/api/profiles',           _handle_profiles_get)
     app.router.add_post('/api/profiles',          _handle_profiles_post)
