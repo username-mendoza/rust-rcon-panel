@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.43'
+_APP_VERSION = '1.20.44'
 
 CONFIG = {}
 
@@ -5298,6 +5298,20 @@ async def _run_wipe_task(wipe_type: str, seed, opts: dict):
             log(f'Deleted {n} file(s) from {identity_dir}', 'ok')
         except Exception as e:
             log(f'File deletion failed: {e}', 'err')
+
+        # Clear stale map image so the old map isn't shown while the new one renders
+        map_cfg = CONFIG.get('map', {})
+        img_path = map_cfg.get('image_path', '')
+        if img_path:
+            for fname in (img_path, str(Path(img_path).parent / 'monuments.json')):
+                try:
+                    if os.path.exists(fname):
+                        os.remove(fname)
+                except Exception:
+                    pass
+        global _mapimg_path_cache, _mapimg_path_mtime
+        _mapimg_path_cache = None
+        _mapimg_path_mtime = 0.0
 
         # 6. Clear backpacks
         log('Clearing Backpacks mod data…', 'step')
