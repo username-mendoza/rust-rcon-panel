@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.42'
+_APP_VERSION = '1.20.43'
 
 CONFIG = {}
 
@@ -4977,6 +4977,7 @@ async def _handle_server_action(req):
 
 _RUST_DIR      = '/home/steam/rustserver'
 _RUST_START_SH = '/home/steam/rustserver/start.sh'
+_RUST_SVC_FILE = '/etc/systemd/system/rust-server.service'
 _OXIDE_RELEASE = 'https://github.com/OxideMod/Oxide.Rust/releases/latest/download/Oxide.Rust-linux.zip'
 _STEAMCMD_CANDIDATES = [
     '/home/steam/steamcmd/steamcmd.sh',
@@ -5064,22 +5065,67 @@ def _clear_backpacks_data() -> int:
     return removed
 
 
-def _update_seed_in_startsh(seed: int) -> bool:
-    if not os.path.exists(_RUST_START_SH):
-        return False
-    with open(_RUST_START_SH) as f:
-        content = f.read()
-    new_content = re.sub(r'-server\.seed\s+\S+', f'-server.seed {seed}', content)
-    if new_content == content:
-        # Argument not found — append before end of exec line
-        new_content = re.sub(r'(\+server\.saveinterval\s+\d+)', r'\1 \\\n  -server.seed ' + str(seed), content)
-    if new_content == content:
-        return False  # couldn't find insertion point
-    tmp = _RUST_START_SH + '.tmp'
-    with open(tmp, 'w') as f:
-        f.write(new_content)
-    os.replace(tmp, _RUST_START_SH)
-    return True
+async def _apply_seed(seed: int, log) -> bool:
+    import shlex, tempfile
+    sudo_pass = CONFIG.get('web', {}).get('sudo_password', '')
+
+    # Update systemd service file (world-readable, needs root to write)
+    svc_updated = False
+    if os.path.exists(_RUST_SVC_FILE):
+        try:
+            with open(_RUST_SVC_FILE) as f:
+                content = f.read()
+            new_content = re.sub(r'-server\.seed\s+"[0-9]+"', f'-server.seed "{seed}"', content)
+            if new_content == content:
+                new_content = re.sub(r'-server\.seed\s+[0-9]+', f'-server.seed "{seed}"', content)
+            if new_content != content:
+                tmp = '/tmp/_rust_svc_seed.service'
+                with open(tmp, 'w') as f:
+                    f.write(new_content)
+                cmd = f'cp {tmp} {_RUST_SVC_FILE} && systemctl daemon-reload'
+                shell_cmd = f'echo {shlex.quote(sudo_pass)} | su -c {shlex.quote(cmd)} root' if sudo_pass else cmd
+                proc = await asyncio.create_subprocess_shell(
+                    shell_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                _, err = await asyncio.wait_for(proc.communicate(), timeout=15)
+                if proc.returncode == 0:
+                    svc_updated = True
+                else:
+                    log(f'Service file update failed: {err.decode().strip() or proc.returncode}', 'warn')
+            else:
+                log('Could not locate -server.seed in service file', 'warn')
+        except Exception as e:
+            log(f'Service seed update error: {e}', 'warn')
+    else:
+        log(f'Service file not found: {_RUST_SVC_FILE}', 'warn')
+
+    # Also update startrust.sh if it exists
+    if os.path.exists(_RUST_START_SH):
+        try:
+            with open(_RUST_START_SH) as f:
+                content = f.read()
+            new_content = re.sub(r'-server\.seed\s+\S+', f'-server.seed {seed}', content)
+            if new_content != content:
+                tmp = _RUST_START_SH + '.tmp'
+                with open(tmp, 'w') as f:
+                    f.write(new_content)
+                os.replace(tmp, _RUST_START_SH)
+        except Exception:
+            pass
+
+    # Keep config.json map.seed in sync
+    try:
+        if 'map' not in CONFIG:
+            CONFIG['map'] = {}
+        CONFIG['map']['seed'] = seed
+        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+        with open(cfg_path, 'w') as f:
+            json.dump(CONFIG, f, indent=2)
+    except Exception:
+        pass
+
+    if svc_updated:
+        log(f'Seed set to {seed}', 'ok')
+    return svc_updated
 
 
 def _version_gt(a: str, b: str) -> bool:
@@ -5265,15 +5311,15 @@ async def _run_wipe_task(wipe_type: str, seed, opts: dict):
             log(f'Backpack clear failed: {e}', 'warn')
 
         # 7. Update seed
-        if seed is not None:
-            log(f'Setting seed {seed} in start.sh…', 'step')
-            try:
-                ok = await asyncio.to_thread(_update_seed_in_startsh, int(seed))
-                log('Seed updated in start.sh' if ok else 'Could not locate -server.seed in start.sh — update manually', 'ok' if ok else 'warn')
-            except Exception as e:
-                log(f'Seed update failed: {e}', 'warn')
-        else:
-            log('Random seed — no start.sh change needed', 'info')
+        import random as _random
+        if seed is None:
+            seed = _random.randint(1, 2147483647)
+            log(f'Generated random seed: {seed}', 'info')
+        log(f'Applying seed {seed} to service file…', 'step')
+        try:
+            await _apply_seed(int(seed), log)
+        except Exception as e:
+            log(f'Seed update failed: {e}', 'warn')
 
         # 8. Start server
         log('Starting server…', 'step')
