@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.41'
+_APP_VERSION = '1.20.42'
 
 CONFIG = {}
 
@@ -3550,12 +3550,12 @@ function showWipeDialog(wipeType) {
       <div style="margin:16px 0 6px;font-size:11px;color:var(--dim);font-weight:bold;letter-spacing:.04em;text-transform:uppercase">Confirm</div>
       <div style="font-size:12px;color:var(--dim);margin-bottom:6px">Type <b style="color:${isFull?'var(--red)':'#fcd34d'}">WIPE</b> to activate the button</div>
       <input id="wipe-confirm-input" class="settings-input" type="text" placeholder="WIPE" autocomplete="off"
-        oninput="$('wipe-do').disabled=this.value.trim().toUpperCase()!=='WIPE'">
+        oninput="wipeConfirmToggle(this.value)">
     </div>
     <div id="wipe-progress" style="display:none;flex:1;overflow-y:auto;min-height:120px;padding:8px 0"></div>
     <div class="modal-btns" style="flex-shrink:0;margin-top:14px">
-      <button id="wipe-do" class="modal-btn ok" style="background:${isFull?'var(--red)':'#b45309'};border-color:${isFull?'var(--red)':'#b45309'}" disabled
-        onclick="startWipe(${JSON.stringify(wipeType)})">Do ${title}</button>
+      <button id="wipe-do" class="modal-btn secondary" disabled data-color="${isFull?'var(--red)':'#b45309'}"
+        onclick="startWipe('${wipeType}')">Do ${title}</button>
       <button id="wipe-cancel" class="modal-btn secondary" onclick="closeWipeModal()">Cancel</button>
     </div>
   </div>`;
@@ -3567,6 +3567,17 @@ function showWipeDialog(wipeType) {
 function wipeRandToggle() {
   const rand = $('wipe-rand').checked;
   $('wipe-seed-row').style.display = rand ? 'none' : 'flex';
+}
+
+function wipeConfirmToggle(val) {
+  const ok = val.trim().toUpperCase() === 'WIPE';
+  const b = $('wipe-do');
+  if (!b) return;
+  b.disabled = !ok;
+  const color = b.dataset.color;
+  b.style.background   = ok ? color : '';
+  b.style.borderColor  = ok ? color : '';
+  b.style.color        = ok ? '#fff' : '';
 }
 
 function _addWipeCopyBtn() {
@@ -3695,7 +3706,19 @@ async function pollWipeStatus() {
     if (d.done) {
       clearInterval(_wipePollTimer);
       const doBtn = $('wipe-do');
-      if (doBtn) doBtn.textContent = d.ok ? 'Finished' : 'Failed';
+      if (doBtn) {
+        doBtn.style.background = '';
+        doBtn.style.borderColor = '';
+        doBtn.style.color = '';
+        if (d.ok) {
+          doBtn.disabled = false;
+          doBtn.textContent = 'Finished';
+          doBtn.onclick = closeWipeModal;
+        } else {
+          doBtn.disabled = true;
+          doBtn.textContent = 'Failed';
+        }
+      }
       $('wipe-cancel').textContent = 'Close';
       _verCheckTs = 0;
       setTimeout(() => { if (activeTab === 'server') loadServerStats(); }, 5000);
