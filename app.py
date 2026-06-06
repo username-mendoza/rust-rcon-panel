@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.44'
+_APP_VERSION = '1.20.45'
 
 CONFIG = {}
 
