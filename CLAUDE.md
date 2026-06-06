@@ -219,12 +219,14 @@ python3 - << 'PYEOF'
 import base64
 with open('/home/steam/rcon-panel/app.py','rb') as f: app_b64 = base64.b64encode(f.read()).decode()
 with open('/home/steam/rustserver/oxide/plugins/MapRenderer.cs','rb') as f: cs_b64 = base64.b64encode(f.read()).decode()
+with open('/home/steam/rustserver/oxide/plugins/RconPanelItems.cs','rb') as f: items_b64 = base64.b64encode(f.read()).decode()
 with open('/home/steam/rcon-panel/install.sh','r') as f: lines = f.readlines()
 replaced = 0
+blobs = [app_b64, cs_b64, items_b64]
 for i, line in enumerate(lines):
     s = line.strip()
     if s.startswith("data = b'''") and s.endswith("'''"):
-        lines[i] = f"data = b'''{app_b64}'''\n" if replaced==0 else f"data = b'''{cs_b64}'''\n"
+        if replaced < len(blobs): lines[i] = f"data = b'''{blobs[replaced]}'''\n"
         replaced += 1
 print(f"Replaced {replaced} blobs")
 with open('/home/steam/rcon-panel/install.sh','w') as f: f.writelines(lines)
@@ -233,7 +235,7 @@ PYEOF
 
 Also bump `VERSION="x.y.z"` on line 9 and the comment on line 3 of `install.sh`.
 
-Current version: **v1.20.46** (install.sh) / **v1.20.45** (app.py) / **v1.0.9** (MapRenderer.cs)
+Current version: **v1.20.48** (install.sh) / **v1.20.48** (app.py) / **v1.0.10** (MapRenderer.cs) / **v1.0.0** (RconPanelItems.cs)
 
 ## Service Management
 

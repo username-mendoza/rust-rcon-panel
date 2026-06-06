@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.47'
+_APP_VERSION = '1.20.48'
 
 CONFIG = {}
 
@@ -707,6 +707,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 #give-select:focus { border-color: var(--accent); }
 #give-select optgroup { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
 #give-select option { color: var(--text); padding: 2px 4px; }
+#give-select option:checked { background: linear-gradient(0deg, var(--accent) 0%, var(--accent) 100%); color: #111; }
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -1906,7 +1907,7 @@ const RUST_ITEMS = [
   {c:'Misc', n:'Small Stash',                 id:'stash.small'},
 ];
 
-function openGiveModal(p) {
+async function openGiveModal(p) {
   const overlay = document.createElement('div');
   overlay.id = 'modal-overlay';
   overlay.innerHTML = `<div id="modal-box" style="width:320px">
@@ -1933,11 +1934,23 @@ function openGiveModal(p) {
   const sel = document.getElementById('give-select');
   const srch = document.getElementById('give-search');
 
+  let items = RUST_ITEMS;
+  try {
+    const r = await fetch('/api/items');
+    if (r.ok) {
+      const data = await r.json();
+      if (Array.isArray(data) && data.length > 0) {
+        items = data.map(i => ({c: i.category, n: i.name, id: i.id}));
+        items.sort((a, b) => a.c < b.c ? -1 : a.c > b.c ? 1 : a.n < b.n ? -1 : a.n > b.n ? 1 : 0);
+      }
+    }
+  } catch(e) {}
+
   function populate(filter) {
     sel.innerHTML = '';
     const f = (filter || '').toLowerCase();
     let lastCat = null, grp = null;
-    for (const item of RUST_ITEMS) {
+    for (const item of items) {
       if (f && !item.n.toLowerCase().includes(f) && !item.id.includes(f)) continue;
       if (item.c !== lastCat) {
         grp = document.createElement('optgroup');
@@ -3883,7 +3896,7 @@ async def _auth(request, handler):
     pwd = CONFIG.get('web', {}).get('password', '')
     if not pwd:
         return await handler(request)
-    if request.path in ('/login', '/favicon.svg', '/mapimg', '/mapimg/underground', '/monuments'):
+    if request.path in ('/login', '/favicon.svg', '/mapimg', '/mapimg/underground', '/monuments', '/api/items'):
         return await handler(request)
     # CSRF: reject state-changing requests from foreign origins
     if request.method not in ('GET', 'HEAD', 'OPTIONS'):
@@ -4235,6 +4248,17 @@ async def _read_local_monuments() -> str | None:
         if mpath.exists():
             return await asyncio.to_thread(mpath.read_text)
     return None
+
+
+async def _handle_items(req):
+    path = os.path.join(os.path.dirname(CONFIG.get('map', {}).get('image_path', '')),
+                        '..', '..', 'data', 'RconPanel', 'items.json')
+    path = os.path.normpath(path)
+    try:
+        with open(path) as f:
+            return web.Response(text=f.read(), content_type='application/json')
+    except FileNotFoundError:
+        return web.Response(text='[]', content_type='application/json', status=404)
 
 
 async def _handle_monuments_public(req):
@@ -5744,6 +5768,7 @@ def main():
     app.router.add_get('/api/worldcfg',           _handle_api_worldcfg)
     app.router.add_get('/api/about',              _handle_about)
     app.router.add_get('/api/monuments',          _handle_monuments)
+    app.router.add_get('/api/items',              _handle_items)
     app.router.add_get('/monuments',              _handle_monuments_public)
     app.router.add_get('/api/players',            _handle_players_api)
     app.router.add_get('/mapimg',                 _handle_mapimg)
