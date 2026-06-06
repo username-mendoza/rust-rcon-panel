@@ -2,47 +2,57 @@
 
 ## What This Is
 
-A self-hosted web RCON panel for a Rust dedicated server. Single Python file (`app.py`) using `aiohttp` — serves HTTP, WebSocket, and proxies RCON to the game server. No framework, no build step. Also includes a custom Oxide/uMod C# plugin (`MapRenderer.cs`) that renders the terrain map to a PNG.
+A self-hosted web RCON panel for a Rust dedicated server. Single Python file (`app.py`) using `aiohttp` — serves HTTP, WebSocket, and proxies RCON to the game server. No framework, no build step. Also includes a custom Oxide/uMod C# plugin (`MapRenderer.cs`) that renders the terrain map and underground tunnel network to PNG files.
 
 ## Infrastructure
 
 - **Host machine**: Debian 12 Proxmox VM
 - **Panel runs on**: `/home/steam/rcon-panel/app.py` as systemd service `rust-rcon-panel`
-- **Game server RCON**: `ws://<server-ip>:28016/<rcon-password>`
+- **Game server RCON**: `ws://192.168.55.20:28016/<rcon-password>` (password encrypted in `profiles.json`)
 - **Panel listens**: `0.0.0.0:80`
 - **HAProxy** fronts the panel (external traffic → panel on port 80)
-- **Service user**: `steam`; must `su root` (password: not stored) to restart
+- **Service user**: `steam`; must `su root` (sudo_password in config.json) to restart systemd units
+- **Secret key**: `/home/steam/rcon-panel/.secret_key` (root-owned, 600) — used by Fernet to encrypt RCON passwords stored in `profiles.json`
 
 ## Files
 
 ```
 /home/steam/rcon-panel/
   app.py          # Main app — all Python backend + full embedded HTML/CSS/JS
-  config.json     # RCON + web config (host, port, password, map settings)
-  install.sh      # Self-contained installer v1.5.0 (embeds app.py + MapRenderer.cs as base64 blobs)
+  config.json     # Web config + map settings (no rcon section — stored in profiles.json)
+  profiles.json   # RCON connection profiles with Fernet-encrypted passwords
+  install.sh      # Self-contained installer v1.20.46 (embeds app.py + MapRenderer.cs as base64 blobs)
   setup.sh        # Installs aiohttp + systemd service (run once)
   static/
     favicon.svg   # Skull icon served at /favicon.svg
   players.json    # Auto-created at runtime — player session history DB
+  .secret_key     # Fernet key (root-owned) for encrypting RCON passwords
 
 /home/steam/rustserver/oxide/plugins/
-  MapRenderer.cs  # Oxide plugin v1.0.7 — renders terrain PNG on wipe/startup/command
+  MapRenderer.cs  # Oxide plugin v1.0.9 — renders surface + underground PNG maps
+
+/home/steam/rustserver/oxide/data/MapRenderer/
+  map.png           # Surface terrain map (1024×1024)
+  underground.png   # Underground tunnel network map (1024×1024)
+  monuments.json    # Monument positions exported alongside map.png
 ```
 
 ## config.json
 
 ```json
 {
-  "rcon":  { "host": "<server-ip>", "port": 28016, "password": "..." },
-  "web":   { "host": "0.0.0.0", "port": 80, "password": "" },
-  "map":   { "world_size": 4500, "seed": 1603105674, "image_url": "",
-             "image_path": "/home/steam/rustserver/oxide/data/MapRenderer/map.png" }
+  "web": { "host": "0.0.0.0", "port": 80, "password": "<pbkdf2hash>",
+           "sudo_password": "...", "last_profile_id": "..." },
+  "map": { "world_size": 4500, "seed": 473831323, "image_url": "",
+           "image_path": "/home/steam/rustserver/oxide/data/MapRenderer/map.png" }
 }
 ```
 
+Note: `rcon` section is absent — RCON credentials live in `profiles.json` encrypted with Fernet.
+
 ## Python Backend
 
-`app.py` is ~1980 lines. Top section is pure Python; the HTML constant `HTML` contains all frontend code.
+`app.py` is ~5800 lines. Version: `_APP_VERSION = '1.20.45'` (line 23). Top section is pure Python; the HTML constant `HTML` contains all frontend code.
 
 ### API Routes
 
@@ -54,9 +64,23 @@ A self-hosted web RCON panel for a Rust dedicated server. Single Python file (`a
 | `GET /api/cfg` | `_handle_api_cfg` | Map config (world_size, seed) |
 | `GET /api/time` | `_handle_time` | Server time + timezone from `/etc/timezone` |
 | `GET /api/players` | `_handle_players_api` | Full player history from `players.json` |
-| `GET /api/monuments` | `_handle_monuments` | Monument list from RCON |
-| `GET /mapimg` | `_handle_mapimg` | Serve map PNG from disk or URL |
-| `GET /api/mapimg/refresh` | `_handle_mapimg_refresh` | Force re-fetch map image |
+| `GET /api/monuments` | `_handle_monuments` | Monument list from local file or RCON |
+| `GET /mapimg` | `_handle_mapimg` | Serve surface map PNG from disk or URL |
+| `GET /mapimg/underground` | `_handle_mapimg_underground` | Serve underground PNG from disk |
+| `GET /api/mapimg/refresh` | `_handle_mapimg_refresh` | Force re-fetch map image from URL |
+
+Both `/mapimg` and `/mapimg/underground` are exempt from auth (in the `_auth` middleware allowlist).
+
+### Map Image Caching
+
+```python
+_mapimg_path_cache: bytes          # surface map bytes
+_mapimg_path_mtime: float          # surface map mtime
+_mapimg_underground_cache: bytes   # underground map bytes
+_mapimg_underground_mtime: float   # underground map mtime
+```
+
+Cache invalidated by mtime check on every request.
 
 ### Player Session Tracking
 
@@ -101,6 +125,15 @@ Key RCON commands and their response formats:
 - Double-click to reset zoom; wheel to zoom; drag to pan
 - `sendBg('location')` polled every 30s when map tab is active → draws player dots
 
+#### Surface/Underground Layer Toggle
+
+- `mapLayer` JS variable: `'surface'` or `'underground'`
+- `setMapLayer(layer)` — switches active button, reloads map image
+- `checkUndergroundAvailable()` — HEAD `/mapimg/underground`; shows `#map-layer-toggle` if 200, polls every 30s up to 6× if 404
+- `loadMapImg()` — uses `/mapimg/underground` when layer is underground; only retries on surface 404 (underground 404 = not yet rendered, no retry)
+- Toggle is hidden by default (`display:none`), shown automatically when `underground.png` exists
+- After `maprender.generate`, `rerenderMap()` rechecks underground availability after 5s delay
+
 ### Players Tab
 
 - `loadPlayersTab(force)` — fetches `/api/players`, caches 30s
@@ -125,20 +158,57 @@ Silent poll responses are parsed and swallowed before reaching the console log:
 - JSON object starting with `{` containing `Framerate` key → parsed as serverinfo, suppressed
 - `parseLocations(msg)` returning true → location data, suppressed
 
-## MapRenderer.cs (Oxide Plugin v1.0.7)
+## MapRenderer.cs (Oxide Plugin v1.0.9)
 
 Renders Rust terrain to PNG on:
-- Server init (10s delay)
-- New wipe (`OnNewSave`, 20s delay)
-- RCON command `maprender.generate`
+- Server init (surface: 30s delay, underground: 40s delay)
+- New wipe (`OnNewSave`, same delays)
+- RCON command `maprender.generate` (resets `_rendered`/`_undergndRendered` flags first, always re-renders)
 
-Key constants (must stay in sync with JS):
+### Output files
+
+| File | Description |
+|------|-------------|
+| `map.png` | 1024×1024 surface terrain map with hillshading, roads, rails |
+| `underground.png` | 1024×1024 tunnel network: dark bg, amber rails, station dots |
+| `monuments.json` | Monument positions (written alongside `map.png`) |
+
+### Key constants (must stay in sync with JS)
+
 - `const float BORDER = 500f` — ocean border added around terrain (matches `MAP_BORDER = 500` in JS)
-- `const int RES = 2048` — output image resolution
+- `const int RES = 1024` — output image resolution
 
-All `System.Drawing` types fully qualified (`System.Drawing.Graphics`, `System.Drawing.Color`, etc.) to avoid ambiguity with UnityEngine types.
+### Underground rendering
 
-River/water color matches ocean: blue family (`r=24-36, g=66-86, b=120-172`).
+Data source: `FindObjectsOfType<TrainTrackSpline>()` filtered by `transform.position.y < -5f`.
+
+**Critical**: `TrainTrackSpline.points` is `Vector3[]` in **local space**. Must call `spline.transform.TransformPoint(points[i])` to get world-space coordinates before mapping to pixels. Using raw `points[i].x/z` directly produces wrong results (lines cluster near image origin).
+
+Station detection: `TrainTrackSpline.isStation` (bool field, accessible via reflection).
+
+`TerrainMeta.Path.Rails` contains surface-only rails — zero underground segments even on servers with the underground train network. Don't use it for underground.
+
+### Oxide C# constraints
+
+- **No `dynamic` keyword** — Oxide's compiler lacks `Microsoft.CSharp.RuntimeBinder`. Use `object` + explicit reflection.
+- **`DungeonGrid` not in scope** — not accessible from Oxide plugins.
+- **All `System.Drawing` types must be fully qualified** to avoid ambiguity with UnityEngine types.
+
+### RCON Commands
+
+| Command | Purpose |
+|---------|---------|
+| `maprender.generate` | Force re-render both surface + underground maps |
+| `maprender.debug` | Diagnostic: rail point counts by Y threshold, TrainTrackSpline count/fields, sample positions |
+
+### Hooks
+
+- `OnServerInitialized()` — reads config, schedules renders if files don't exist
+- `OnNewSave(filename)` — resets flags, schedules both renders
+- Skip scheduling if file already exists (avoids stacking timers during rapid Oxide reloads)
+- `DoRender()` / `DoRenderUnderground()` guard with `_rendered` / `_undergndRendered` flags
+
+All `System.Drawing` types fully qualified. PNG writing done off main thread via `ThreadPool.QueueUserWorkItem`.
 
 ## Release Process
 
@@ -163,19 +233,29 @@ PYEOF
 
 Also bump `VERSION="x.y.z"` on line 9 and the comment on line 3 of `install.sh`.
 
-Current version: **v1.5.0**
+Current version: **v1.20.46** (install.sh) / **v1.20.45** (app.py) / **v1.0.9** (MapRenderer.cs)
 
 ## Service Management
 
 ```bash
-# Restart (requires root password)
-echo "<password>" | su -c "systemctl restart rust-rcon-panel" root
+# Restart (requires root password from config.json web.sudo_password)
+echo "<sudo_password>" | su -c "systemctl restart rust-rcon-panel" root
 
-# Logs
-journalctl -u rust-rcon-panel -n 50
+# Logs (must run as root)
+echo "<sudo_password>" | su -c "journalctl -u rust-rcon-panel -n 50 --no-pager" root
 
 # Syntax check before restart
 python3 -m py_compile app.py
+
+# Decrypt RCON password (run as root)
+python3 -c "
+from cryptography.fernet import Fernet; import json
+key = open('/home/steam/rcon-panel/.secret_key','rb').read().strip()
+profiles = json.load(open('/home/steam/rcon-panel/profiles.json'))
+for p in profiles:
+    pwd = p['password']; dec = Fernet(key).decrypt(pwd[4:].encode()).decode() if pwd.startswith('enc:') else pwd
+    print(p['host'], p['port'], dec)
+"
 ```
 
 ## Rules & Constraints
@@ -197,4 +277,5 @@ python3 -m py_compile app.py
 | `playerlist` | JSON array with `SteamID`, `Username`, `Ping` |
 | `location` | Text lines: `steamid "Name" pos(x,y,z) ...` |
 | `inventory.give <id> <item> <amt>` | Give item to player |
-| `maprender.generate` | Triggers MapRenderer plugin to re-render map |
+| `maprender.generate` | Re-renders surface + underground maps (resets render flags) |
+| `maprender.debug` | Diagnostic output: rail Y-counts, TrainTrackSpline count + field list |
