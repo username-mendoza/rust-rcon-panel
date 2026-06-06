@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.45'
+_APP_VERSION = '1.20.47'
 
 CONFIG = {}
 
@@ -1138,7 +1138,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
   <div id="left">
     <!-- Unified tab bar -->
     <div id="tabbar">
-      <div class="tab active" id="t-console" onclick="switchTab('console')">Console</div>
+      <div class="tab" id="t-console" onclick="switchTab('console')">Console</div>
       <div class="tab" id="t-chat" onclick="switchTab('chat')">Chat<span class="tbadge" id="chat-badge"></span></div>
       <div class="tab" id="t-map" onclick="switchTab('map')">Map</div>
       <div class="tab" id="t-players" onclick="switchTab('players')">Players<span class="tbadge" id="players-badge"></span></div>
@@ -1147,7 +1147,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
     </div>
 
     <!-- Console panel -->
-    <div class="panel active" id="panel-console">
+    <div class="panel" id="panel-console">
       <div id="console"></div>
       <div id="cmd-bar">
         <div id="cmd-pfx">&gt;</div>
@@ -1462,6 +1462,7 @@ const TABS = ['console', 'chat', 'map', 'players', 'oxide', 'server'];
 
 function switchTab(name) {
   activeTab = name;
+  try { localStorage.setItem('rcon_active_tab', name); } catch(e) {}
   TABS.forEach(t => {
     $('t-'+t).className    = 'tab' + (t === name ? ' active' : '');
     $('panel-'+t).className = 'panel' + (t === name ? ' active' : '');
@@ -1963,7 +1964,7 @@ function openGiveModal(p) {
     const item = sel.value;
     const amt  = Math.max(1, parseInt(document.getElementById('give-amount').value) || 1);
     if (!item) return;
-    send('inventory.give ' + p.id + ' ' + item + ' ' + amt);
+    send('inventory.giveto "' + p.name.replace(/"/g, '') + '" ' + item + ' ' + amt);
     overlay.remove();
   };
 
@@ -2230,12 +2231,13 @@ function drawMap() {
     }
     ctx.restore();
     // Label — always show; flip to left when near right/bottom edge of map square
-    const font = st.shape === 'dot' ? '8px Consolas,monospace' : '9px Consolas,monospace';
+    const font = st.shape === 'dot' ? '8px Arial,sans-serif' : '9px Arial,sans-serif';
     ctx.font = font;
     const tw = ctx.measureText(m.name).width;
     const lx = mx > mx0 + size * 0.65 ? mx - st.r - 3 - tw : mx + st.r + 3;
     const ly = my > my0 + size * 0.92 ? my - st.r - 3 : my + 3;
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth   = 2.5;
+    ctx.lineJoin    = 'round';
     ctx.strokeStyle = 'rgba(0,0,0,0.75)';
     ctx.fillStyle   = st.lbl;
     ctx.strokeText(m.name, lx, ly);
@@ -3856,6 +3858,7 @@ function connect() {
 
 setInterval(() => { if (rconOk) { sendBg('playerlist'); sendBg('serverinfo'); sendBg('status'); sendBg('env.time'); sendBg('location'); } }, 60000);
 connect();
+{ const t = localStorage.getItem('rcon_active_tab'); switchTab(TABS.includes(t) ? t : 'console'); }
 </script>
 </body>
 </html>"""
@@ -4069,6 +4072,7 @@ async def _rcon_loop():
                 async with sess.ws_connect(url) as ws:
                     _rcon_ok = True
                     await _broadcast({'type': 'connected'})
+                    asyncio.create_task(_sync_online_players())
                     stop = asyncio.Event()
                     recv_t = asyncio.create_task(_recv(ws))
                     send_t = asyncio.create_task(_send(ws, stop))
@@ -4292,6 +4296,38 @@ async def _handle_ws(req):
     finally:
         _browsers.discard(ws)
     return ws
+
+
+async def _sync_online_players():
+    """On RCON connect, open sessions for players already in-game (panel may have restarted mid-session)."""
+    await asyncio.sleep(2.0)
+    try:
+        raw = await _rcon_query('playerlist', timeout=10.0)
+        players = json.loads(raw)
+        if not isinstance(players, list):
+            return
+    except Exception:
+        return
+    now = int(time.time())
+    changed = False
+    for p in players:
+        sid  = str(p.get('SteamID', '') or p.get('steamid', ''))
+        name = str(p.get('Username', '') or p.get('username', '') or p.get('DisplayName', '') or '?')
+        if not sid:
+            continue
+        if sid not in _player_db:
+            _player_db[sid] = {'name': name, 'sessions': []}
+        else:
+            _player_db[sid]['name'] = name
+        open_sessions = [s for s in _player_db[sid]['sessions'] if 'l' not in s]
+        if not open_sessions:
+            for s in _player_db[sid]['sessions']:
+                if 'l' not in s:
+                    s['l'] = now
+            _player_db[sid]['sessions'].append({'j': now})
+            changed = True
+    if changed:
+        await asyncio.to_thread(_save_player_db)
 
 
 async def _rcon_query(cmd: str, timeout: float = 8.0) -> str:

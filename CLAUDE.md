@@ -276,6 +276,6 @@ for p in profiles:
 | `serverinfo` | JSON with `Framerate`, `Memory`, `Hostname`, `Players`, etc. |
 | `playerlist` | JSON array with `SteamID`, `Username`, `Ping` |
 | `location` | Text lines: `steamid "Name" pos(x,y,z) ...` |
-| `inventory.give <id> <item> <amt>` | Give item to player |
+| `inventory.giveto "<display_name>" <item> <amt>` | Give item to player (requires display name, not steamid — `inventory.give <steamid>` silently does nothing) |
 | `maprender.generate` | Re-renders surface + underground maps (resets render flags) |
 | `maprender.debug` | Diagnostic output: rail Y-counts, TrainTrackSpline count + field list |
