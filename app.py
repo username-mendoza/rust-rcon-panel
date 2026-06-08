@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.48'
+_APP_VERSION = '1.20.49'
 
 CONFIG = {}
 
@@ -3355,9 +3355,8 @@ async function loadServerStats() {
       set('ssv-uptime', h + 'h ' + m + 'm');
     }
     if (d.GameTime !== undefined) {
-      const gt = parseFloat(d.GameTime);
-      const h = Math.floor(gt), m = Math.round((gt - h) * 60);
-      set('ssv-gametime', h + ':' + String(m).padStart(2,'0'));
+      const tm = String(d.GameTime).match(/(\d{1,2}:\d{2}):\d{2}$/);
+      set('ssv-gametime', tm ? tm[1] : '--');
     }
     set('ssv-map', d.Map || '--');
     _installedGameVer  = d._GameVersion  || '';
@@ -4334,22 +4333,28 @@ async def _sync_online_players():
         return
     now = int(time.time())
     changed = False
+    online_sids = set()
     for p in players:
         sid  = str(p.get('SteamID', '') or p.get('steamid', ''))
         name = str(p.get('Username', '') or p.get('username', '') or p.get('DisplayName', '') or '?')
         if not sid:
             continue
+        online_sids.add(sid)
         if sid not in _player_db:
             _player_db[sid] = {'name': name, 'sessions': []}
         else:
             _player_db[sid]['name'] = name
         open_sessions = [s for s in _player_db[sid]['sessions'] if 'l' not in s]
         if not open_sessions:
-            for s in _player_db[sid]['sessions']:
-                if 'l' not in s:
-                    s['l'] = now
             _player_db[sid]['sessions'].append({'j': now})
             changed = True
+    # Close stale open sessions for players not currently online
+    for sid, p in _player_db.items():
+        if sid not in online_sids:
+            for s in p.get('sessions', []):
+                if 'l' not in s:
+                    s['l'] = now
+                    changed = True
     if changed:
         await asyncio.to_thread(_save_player_db)
 
