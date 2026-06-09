@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.49'
+_APP_VERSION = '1.20.50'
 
 CONFIG = {}
 
@@ -2583,13 +2583,22 @@ function renderPlayersTable() {
   if (plSubtab === 'banned') return;
   if (!playersData) { loadPlayersTab(true); return; }
   const search = ($('pl-search').value || '').toLowerCase();
-  let rows = playersData.filter(p =>
-    (plSubtab === 'online' ? p.online : true) &&
-    (!search || p.name.toLowerCase().includes(search) || p.id.includes(search))
-  );
+
+  // Merge live players not yet in history DB (e.g. joined before panel restart saw the event)
+  const knownIds = new Set(playersData.map(p => p.id));
+  const allData = [...playersData, ...Object.values(livePlayers)
+    .filter(lp => !knownIds.has(lp.id))
+    .map(lp => ({id:lp.id, name:lp.name, online:true, session_start:null, total_seconds:0, session_count:0, first_seen:null, last_seen:null, sessions:[]}))];
+
+  let rows = allData.filter(p => {
+    const isOnline = p.online || !!livePlayers[p.id];
+    return (plSubtab === 'online' ? isOnline : true) &&
+      (!search || p.name.toLowerCase().includes(search) || p.id.includes(search));
+  });
 
   rows.sort((a, b) => {
-    if (a.online !== b.online) return a.online ? -1 : 1;
+    const ao = a.online || !!livePlayers[a.id], bo = b.online || !!livePlayers[b.id];
+    if (ao !== bo) return ao ? -1 : 1;
     let av = a[plSortKey] ?? 0, bv = b[plSortKey] ?? 0;
     if (typeof av === 'string') av = av.toLowerCase();
     if (typeof bv === 'string') bv = bv.toLowerCase();
@@ -2602,9 +2611,9 @@ function renderPlayersTable() {
     th.className = (m && m[1] === plSortKey) ? (plSortAsc ? 'sort-asc' : 'sort-desc') : '';
   });
 
-  const online = playersData.filter(p => p.online).length;
+  const onlineCount = allData.filter(p => p.online || !!livePlayers[p.id]).length;
   const badge = $('players-badge');
-  if (online > 0) { badge.textContent = online; badge.className = 'tbadge show'; }
+  if (onlineCount > 0) { badge.textContent = onlineCount; badge.className = 'tbadge show'; }
   else { badge.textContent = ''; badge.className = 'tbadge'; }
   $('pl-count').textContent = rows.length + ' player' + (rows.length !== 1 ? 's' : '') +
     (plSubtab === 'online' ? ' online' : '');
@@ -2618,6 +2627,7 @@ function renderPlayersTable() {
   }
 
   for (const p of rows) {
+    const isOnline = p.online || !!livePlayers[p.id];
     const live = livePlayers[p.id];
     const ping = live ? live.ping : null;
     const pc   = ping !== null ? (ping < 80 ? 'g' : ping < 150 ? 'm' : 'b') : '';
@@ -2626,13 +2636,13 @@ function renderPlayersTable() {
       : '<td></td>';
 
     let totalSecs = p.total_seconds || 0;
-    if (p.online && p.session_start) totalSecs += Date.now()/1000 - p.session_start;
+    if (isOnline && p.session_start) totalSecs += Date.now()/1000 - p.session_start;
 
     const tr = document.createElement('tr');
-    tr.className = 'pl-row' + (p.online ? ' online' : '');
+    tr.className = 'pl-row' + (isOnline ? ' online' : '');
     tr.dataset.id = p.id;
     tr.innerHTML =
-      '<td><span class="pl-dot'+(p.online?' on':'')+'"></span></td>' +
+      '<td><span class="pl-dot'+(isOnline?' on':'')+'"></span></td>' +
       '<td class="pl-name">'+esc(p.name)+'</td>' +
       '<td><span class="pl-sid" title="Click to copy" onclick="event.stopPropagation();navigator.clipboard.writeText(\''+p.id+'\')">'+esc(p.id)+'</span></td>' +
       '<td>'+fmtDuration(totalSecs)+'</td>' +
@@ -2640,7 +2650,7 @@ function renderPlayersTable() {
       '<td>'+fmtDate(p.first_seen)+'</td>' +
       '<td>'+fmtDate(p.last_seen)+'</td>' +
       pingCell;
-    if (p.online) {
+    if (isOnline) {
       tr.onclick = e => { e.stopPropagation(); showPlayerMenu(e, {id: p.id, name: p.name, ping: (livePlayers[p.id] || {}).ping ?? null}); };
     } else {
       tr.onclick = () => togglePlayerSessions(tr, p);
