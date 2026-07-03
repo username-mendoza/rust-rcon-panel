@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.53'
+_APP_VERSION = '1.20.54'
 
 CONFIG = {}
 
@@ -5236,16 +5236,30 @@ async def _verify_wipe_result(wipe_start_ts: float, expected_seed: int, img_path
         vlog('WARNING: no "Generating procedural map" line seen — server may have loaded an existing/cached map instead of a fresh one', 'warn')
 
     if img_path:
+        underground_path = str(Path(img_path).parent / 'underground.png')
+        surface_done = underground_done = False
         for _i in range(150):  # up to ~50 min — map render only starts ~30s after Oxide finishes loading, which itself waits on world gen
             await asyncio.sleep(20)
-            try:
-                if os.path.getmtime(img_path) > wipe_start_ts:
-                    vlog(f'Map image re-rendered: {img_path}', 'ok')
-                    break
-            except Exception:
-                pass
-        else:
+            if not surface_done:
+                try:
+                    if os.path.getmtime(img_path) > wipe_start_ts:
+                        vlog(f'Map image re-rendered: {img_path}', 'ok')
+                        surface_done = True
+                except Exception:
+                    pass
+            if not underground_done:
+                try:
+                    if os.path.getmtime(underground_path) > wipe_start_ts:
+                        vlog(f'Underground map re-rendered: {underground_path}', 'ok')
+                        underground_done = True
+                except Exception:
+                    pass
+            if surface_done and underground_done:
+                break
+        if not surface_done:
             vlog(f'WARNING: map image was never re-rendered after wipe ({img_path}) — check MapRenderer plugin (oxide.reload MapRenderer / maprender.debug)', 'warn')
+        if not underground_done:
+            vlog(f'WARNING: underground map was never re-rendered after wipe ({underground_path}) — check MapRenderer, or this map may simply have no underground train network', 'warn')
     else:
         vlog('No map image_path configured — skipping map render check', 'info')
 
@@ -5334,18 +5348,24 @@ async def _apply_seed(seed: int, log) -> bool:
             if new_content == content:
                 new_content = re.sub(r'-server\.seed\s+[0-9]+', f'-server.seed "{seed}"', content)
             if new_content != content:
-                tmp = '/tmp/_rust_svc_seed.service'
-                with open(tmp, 'w') as f:
-                    f.write(new_content)
-                cmd = f'cp {tmp} {_RUST_SVC_FILE} && systemctl daemon-reload'
-                shell_cmd = f'echo {shlex.quote(sudo_pass)} | su -c {shlex.quote(cmd)} root' if sudo_pass else cmd
-                proc = await asyncio.create_subprocess_shell(
-                    shell_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                _, err = await asyncio.wait_for(proc.communicate(), timeout=15)
-                if proc.returncode == 0:
-                    svc_updated = True
-                else:
-                    log(f'Service file update failed: {err.decode().strip() or proc.returncode}', 'warn')
+                fd, tmp = tempfile.mkstemp(prefix='rcon_panel_seed_', suffix='.service')
+                try:
+                    with os.fdopen(fd, 'w') as f:
+                        f.write(new_content)
+                    cmd = f'cp {shlex.quote(tmp)} {shlex.quote(_RUST_SVC_FILE)} && systemctl daemon-reload'
+                    shell_cmd = f'echo {shlex.quote(sudo_pass)} | su -c {shlex.quote(cmd)} root' if sudo_pass else cmd
+                    proc = await asyncio.create_subprocess_shell(
+                        shell_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                    _, err = await asyncio.wait_for(proc.communicate(), timeout=15)
+                    if proc.returncode == 0:
+                        svc_updated = True
+                    else:
+                        log(f'Service file update failed: {err.decode().strip() or proc.returncode}', 'warn')
+                finally:
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
             else:
                 log('Could not locate -server.seed in service file', 'warn')
         except Exception as e:
@@ -5565,19 +5585,23 @@ async def _run_wipe_task(wipe_type: str, seed, opts: dict):
         except Exception as e:
             log(f'File deletion failed: {e}', 'err')
 
-        # Clear stale map image so the old map isn't shown while the new one renders
+        # Clear stale map images (surface + underground) so the old maps aren't shown
+        # while the new ones render
         map_cfg = CONFIG.get('map', {})
         img_path = map_cfg.get('image_path', '')
         if img_path:
-            for fname in (img_path, str(Path(img_path).parent / 'monuments.json')):
+            underground_path = str(Path(img_path).parent / 'underground.png')
+            for fname in (img_path, underground_path, str(Path(img_path).parent / 'monuments.json')):
                 try:
                     if os.path.exists(fname):
                         os.remove(fname)
                 except Exception:
                     pass
-        global _mapimg_path_cache, _mapimg_path_mtime
+        global _mapimg_path_cache, _mapimg_path_mtime, _mapimg_underground_cache, _mapimg_underground_mtime
         _mapimg_path_cache = None
         _mapimg_path_mtime = 0.0
+        _mapimg_underground_cache = None
+        _mapimg_underground_mtime = 0.0
 
         # 6. Clear backpacks
         log('Clearing Backpacks mod data…', 'step')
