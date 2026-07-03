@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.50'
+_APP_VERSION = '1.20.51'
 
 CONFIG = {}
 
@@ -40,6 +40,7 @@ _secret_key_path: str = ''
 _rcon_pending: dict = {}  # identifier -> asyncio.Future
 _login_attempts: dict = {}  # ip -> [timestamp, ...]
 _profiles_lock: asyncio.Lock = None  # initialised in _startup
+_sync_task: 'asyncio.Task | None' = None
 
 _RE_JOIN         = re.compile(r'(\d{17,18})/(.+?)\s+joined')
 _RE_LEAVE        = re.compile(r'(\d{17,18})/(.+?)\s+(?:disconnect|left the game)', re.I)
@@ -4094,7 +4095,10 @@ async def _rcon_loop():
                 async with sess.ws_connect(url) as ws:
                     _rcon_ok = True
                     await _broadcast({'type': 'connected'})
-                    asyncio.create_task(_sync_online_players())
+                    global _sync_task
+                    if _sync_task and not _sync_task.done():
+                        _sync_task.cancel()
+                    _sync_task = asyncio.create_task(_sync_online_players())
                     stop = asyncio.Event()
                     recv_t = asyncio.create_task(_recv(ws))
                     send_t = asyncio.create_task(_send(ws, stop))
@@ -4332,41 +4336,43 @@ async def _handle_ws(req):
 
 
 async def _sync_online_players():
-    """On RCON connect, open sessions for players already in-game (panel may have restarted mid-session)."""
+    """Reconcile player DB with in-game player list. Runs on RCON connect then every 60 s."""
     await asyncio.sleep(2.0)
-    try:
-        raw = await _rcon_query('playerlist', timeout=10.0)
-        players = json.loads(raw)
-        if not isinstance(players, list):
-            return
-    except Exception:
-        return
-    now = int(time.time())
-    changed = False
-    online_sids = set()
-    for p in players:
-        sid  = str(p.get('SteamID', '') or p.get('steamid', ''))
-        name = str(p.get('Username', '') or p.get('username', '') or p.get('DisplayName', '') or '?')
-        if not sid:
-            continue
-        online_sids.add(sid)
-        if sid not in _player_db:
-            _player_db[sid] = {'name': name, 'sessions': []}
-        else:
-            _player_db[sid]['name'] = name
-        open_sessions = [s for s in _player_db[sid]['sessions'] if 'l' not in s]
-        if not open_sessions:
-            _player_db[sid]['sessions'].append({'j': now})
-            changed = True
-    # Close stale open sessions for players not currently online
-    for sid, p in _player_db.items():
-        if sid not in online_sids:
-            for s in p.get('sessions', []):
-                if 'l' not in s:
-                    s['l'] = now
-                    changed = True
-    if changed:
-        await asyncio.to_thread(_save_player_db)
+    while _rcon_ok:
+        try:
+            raw = await _rcon_query('playerlist', timeout=10.0)
+            players = json.loads(raw)
+            if isinstance(players, list):
+                now = int(time.time())
+                changed = False
+                online_sids = set()
+                for p in players:
+                    sid  = str(p.get('SteamID', '') or p.get('steamid', ''))
+                    name = str(p.get('Username', '') or p.get('username', '') or p.get('DisplayName', '') or '?')
+                    if not sid:
+                        continue
+                    online_sids.add(sid)
+                    if sid not in _player_db:
+                        _player_db[sid] = {'name': name, 'sessions': []}
+                    else:
+                        _player_db[sid]['name'] = name
+                    open_sessions = [s for s in _player_db[sid]['sessions'] if 'l' not in s]
+                    if not open_sessions:
+                        _player_db[sid]['sessions'].append({'j': now})
+                        changed = True
+                for sid, p in _player_db.items():
+                    if sid not in online_sids:
+                        for s in p.get('sessions', []):
+                            if 'l' not in s:
+                                s['l'] = now
+                                changed = True
+                if changed:
+                    await asyncio.to_thread(_save_player_db)
+        except Exception:
+            pass
+        if not _rcon_ok:
+            break
+        await asyncio.sleep(60.0)
 
 
 async def _rcon_query(cmd: str, timeout: float = 8.0) -> str:
