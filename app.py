@@ -16,11 +16,11 @@ import time
 from html import escape as _he
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.54'
+_APP_VERSION = '1.20.55'
 
 CONFIG = {}
 
@@ -154,7 +154,7 @@ def _decrypt_pwd(stored: str) -> str:
         return ''
     try:
         return _fernet.decrypt(stored[4:].encode()).decode()
-    except (InvalidToken, Exception):
+    except Exception:
         return ''
 
 
@@ -1511,7 +1511,8 @@ function ts() {
   return new Date().toLocaleTimeString('en-US', {hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 function autoClass(text) {
   const l = text.toLowerCase();
@@ -1755,7 +1756,7 @@ function openModal(action, p) {
   $('modal-cancel').onclick = () => overlay.remove();
   overlay.onclick = e => { if (e.target===overlay) overlay.remove(); };
   $('modal-ok').onclick = () => {
-    const r = rEl.value.trim() || (isBan?'Banned by admin':'Kicked by admin');
+    const r = (rEl.value.trim() || (isBan?'Banned by admin':'Kicked by admin')).replace(/"/g, '');
     send(isBan ? `ban ${p.id} "${r}"` : `kick ${p.id} "${r}"`);
     overlay.remove();
   };
@@ -4135,7 +4136,13 @@ async def _rcon_loop():
                         t.cancel()
                     await asyncio.gather(recv_t, send_t, restart_t, return_exceptions=True)
         except Exception as e:
-            print(f'RCON connect error: {e}', flush=True)
+            # Some aiohttp exceptions (e.g. WS handshake failures) embed the full request
+            # URL, which contains the RCON password — scrub it before it reaches the journal.
+            msg = str(e)
+            pwd = cfg.get('password', '')
+            if pwd:
+                msg = msg.replace(pwd, '***')
+            print(f'RCON connect error: {msg}', flush=True)
 
         _rcon_ok = False
         await _broadcast({'type': 'disconnected'})
