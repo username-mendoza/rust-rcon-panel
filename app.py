@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.52'
+_APP_VERSION = '1.20.53'
 
 CONFIG = {}
 
@@ -201,6 +201,23 @@ def _migrate_profile_passwords():
             changed = True
     if changed:
         _save_profiles()
+
+def _migrate_sudo_password() -> bool:
+    """Encrypt a legacy plaintext web.sudo_password in place, mirroring RCON profile passwords."""
+    web_cfg = CONFIG.get('web', {})
+    pwd = web_cfg.get('sudo_password', '')
+    if pwd and not pwd.startswith('enc:'):
+        web_cfg['sudo_password'] = _encrypt_pwd(pwd)
+        return True
+    return False
+
+
+def _get_sudo_password() -> str:
+    stored = CONFIG.get('web', {}).get('sudo_password', '')
+    if stored.startswith('enc:'):
+        return _decrypt_pwd(stored)
+    return stored
+
 
 def _profile_for_api(p: dict) -> dict:
     """Return profile with decrypted password for frontend use."""
@@ -3963,8 +3980,17 @@ async def _handle_login_get(req):
 
 
 async def _handle_login_post(req):
-    ip = req.headers.get('X-Forwarded-For', req.remote or '').split(',')[0].strip()
+    # The *first* X-Forwarded-For value is client-supplied and was previously trusted
+    # directly here, letting an attacker bypass the throttle below by spoofing a new
+    # value on every attempt. A reverse proxy appends its own observed peer to the end
+    # of the chain, so the last value is the one hop we can trust; if the header is
+    # absent, fall back to the direct TCP peer.
+    xff = req.headers.get('X-Forwarded-For', '')
+    ip = xff.rsplit(',', 1)[-1].strip() if xff else (req.remote or '')
     now = time.time()
+    for stale_ip, times in list(_login_attempts.items()):
+        if not any(now - t < 600 for t in times):
+            del _login_attempts[stale_ip]
     attempts = [t for t in _login_attempts.get(ip, []) if now - t < 600]
     if len(attempts) >= 10:
         return web.Response(
@@ -5171,7 +5197,7 @@ async def _verify_wipe_result(wipe_start_ts: float, expected_seed: int, img_path
     game server's own log + the rendered map file whether the wipe actually took effect,
     and writes findings to the persistent wipe log for later inspection."""
     import shlex
-    sudo_pass = CONFIG.get('web', {}).get('sudo_password', '')
+    sudo_pass = _get_sudo_password()
     since_arg = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(wipe_start_ts))
     cmd = f'journalctl -u rust-server --since {shlex.quote(since_arg)} --no-pager'
     shell_cmd = f'echo {shlex.quote(sudo_pass)} | su -c {shlex.quote(cmd)} root' if sudo_pass else cmd
@@ -5296,7 +5322,7 @@ def _clear_backpacks_data() -> int:
 
 async def _apply_seed(seed: int, log) -> bool:
     import shlex, tempfile
-    sudo_pass = CONFIG.get('web', {}).get('sudo_password', '')
+    sudo_pass = _get_sudo_password()
 
     # Update systemd service file (world-readable, needs root to write)
     svc_updated = False
@@ -5382,7 +5408,7 @@ async def _server_is_running() -> bool:
 
 async def _systemctl_run(cmd: str, log, timeout: int = 60) -> bool:
     import shlex
-    sudo_pass = CONFIG.get('web', {}).get('sudo_password', '')
+    sudo_pass = _get_sudo_password()
     if sudo_pass:
         shell_cmd = f'echo {shlex.quote(sudo_pass)} | su -c {shlex.quote(cmd)} root'
     else:
@@ -5861,6 +5887,11 @@ def main():
     web_pwd = CONFIG.get('web', {}).get('password', '')
     if web_pwd and not web_pwd.startswith('pbkdf2:'):
         CONFIG['web']['password'] = _hash_web_pwd(web_pwd)
+        with open(cfg_path, 'w') as f:
+            json.dump(CONFIG, f, indent=2)
+
+    # Encrypt a legacy plaintext sudo_password in place (was stored in the clear)
+    if _migrate_sudo_password():
         with open(cfg_path, 'w') as f:
             json.dump(CONFIG, f, indent=2)
 
