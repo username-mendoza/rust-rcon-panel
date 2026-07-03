@@ -235,7 +235,7 @@ PYEOF
 
 Also bump `VERSION="x.y.z"` on line 9 and the comment on line 3 of `install.sh`.
 
-Current version: **v1.20.48** (install.sh) / **v1.20.48** (app.py) / **v1.0.10** (MapRenderer.cs) / **v1.0.0** (RconPanelItems.cs)
+Current version: **v1.20.49** (install.sh, stale — pending blob sync) / **v1.20.52** (app.py) / **v1.0.11** (MapRenderer.cs) / **v1.0.0** (RconPanelItems.cs)
 
 ## Service Management
 
