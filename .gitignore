@@ -3,6 +3,7 @@
 config.json
 profiles.json
 players.json
+wipe_history.log
 
 # Python cache
 __pycache__/

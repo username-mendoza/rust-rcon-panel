@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.51'
+_APP_VERSION = '1.20.52'
 
 CONFIG = {}
 
@@ -5133,6 +5133,96 @@ def _find_steamcmd() -> str | None:
 
 _wipe_state: dict = {'running': False, 'done': True, 'ok': False, 'log': []}
 
+_WIPE_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wipe_history.log')
+
+
+def _persist_log(msg: str, typ: str = 'info', tag: str = 'wipe') -> None:
+    """Write a wipe/update log line to stdout (captured by journalctl -u rust-rcon-panel)
+    and to a standalone file, so wipe history survives panel restarts and modal closes."""
+    line = f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] [{tag}] [{typ.upper():4}] {msg}'
+    print(line, flush=True)
+    try:
+        with open(_WIPE_LOG_FILE, 'a') as f:
+            f.write(line + '\n')
+    except Exception:
+        pass
+
+
+def _make_task_logger(tag: str = 'wipe'):
+    """Logger for a wipe/update task: feeds the in-memory log the UI polls, and persists it."""
+    def log(msg, typ='info'):
+        _wipe_state['log'].append({'msg': msg, 'type': typ})
+        _persist_log(msg, typ, tag)
+    return log
+
+
+def _read_appmanifest_buildid() -> str | None:
+    path = os.path.join(_RUST_DIR, 'steamapps', 'appmanifest_258550.acf')
+    try:
+        with open(path) as f:
+            m = re.search(r'"buildid"\s+"(\d+)"', f.read())
+            return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+async def _verify_wipe_result(wipe_start_ts: float, expected_seed: int, img_path: str) -> None:
+    """Runs detached after the wipe modal already reports completion. Confirms from the
+    game server's own log + the rendered map file whether the wipe actually took effect,
+    and writes findings to the persistent wipe log for later inspection."""
+    import shlex
+    sudo_pass = CONFIG.get('web', {}).get('sudo_password', '')
+    since_arg = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(wipe_start_ts))
+    cmd = f'journalctl -u rust-server --since {shlex.quote(since_arg)} --no-pager'
+    shell_cmd = f'echo {shlex.quote(sudo_pass)} | su -c {shlex.quote(cmd)} root' if sudo_pass else cmd
+
+    def vlog(msg, typ='info'):
+        _persist_log(msg, typ, 'wipe-verify')
+
+    vlog(f'Verifying wipe (expected seed {expected_seed})…', 'step')
+    seed_confirmed = False
+    map_generated = False
+    for _i in range(30):  # up to ~5 min — the "Command Line:" + generation lines appear early in boot
+        await asyncio.sleep(10)
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                shell_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            text = out.decode(errors='replace')
+        except Exception:
+            continue
+        if not map_generated and 'Generating procedural map' in text:
+            map_generated = True
+            vlog('Confirmed: world was freshly generated (not loaded from an existing save)', 'ok')
+        m = re.search(r'-server\.seed\s+"?(\d+)"?', text)
+        if m and not seed_confirmed:
+            seed_confirmed = True
+            actual_seed = int(m.group(1))
+            if actual_seed != expected_seed:
+                vlog(f'MISMATCH: server actually launched with seed {actual_seed}, expected {expected_seed}', 'err')
+            else:
+                vlog(f'Confirmed server launched with seed {actual_seed}', 'ok')
+        if seed_confirmed and map_generated:
+            break
+    if not seed_confirmed:
+        vlog('Could not confirm launch seed from rust-server journal (journalctl unavailable, or server still starting)', 'warn')
+    elif not map_generated:
+        vlog('WARNING: no "Generating procedural map" line seen — server may have loaded an existing/cached map instead of a fresh one', 'warn')
+
+    if img_path:
+        for _i in range(150):  # up to ~50 min — map render only starts ~30s after Oxide finishes loading, which itself waits on world gen
+            await asyncio.sleep(20)
+            try:
+                if os.path.getmtime(img_path) > wipe_start_ts:
+                    vlog(f'Map image re-rendered: {img_path}', 'ok')
+                    break
+            except Exception:
+                pass
+        else:
+            vlog(f'WARNING: map image was never re-rendered after wipe ({img_path}) — check MapRenderer plugin (oxide.reload MapRenderer / maprender.debug)', 'warn')
+    else:
+        vlog('No map image_path configured — skipping map render check', 'info')
+
 
 async def _run_steamcmd_update(log, retries: int = 3) -> bool:
     steamcmd = _find_steamcmd()
@@ -5325,8 +5415,12 @@ async def _systemctl_stop_server(log) -> bool:
 async def _run_wipe_task(wipe_type: str, seed, opts: dict):
     import zipfile, io, shlex
 
-    def log(msg, typ='info'):
-        _wipe_state['log'].append({'msg': msg, 'type': typ})
+    log = _make_task_logger('wipe')
+    wipe_start_ts = time.time()
+    old_seed = CONFIG.get('map', {}).get('seed')
+    seed_desc = 'random' if seed is None else str(seed)
+    log(f'=== {wipe_type.upper()} WIPE requested — seed: {seed_desc} (current seed: {old_seed}) — '
+        f'update_rust={opts.get("update_rust")} update_oxide={opts.get("update_oxide")} update_plugins={opts.get("update_plugins")} ===', 'step')
 
     hdrs = {'User-Agent': f'RconPanel/{_APP_VERSION}'}
 
@@ -5355,7 +5449,14 @@ async def _run_wipe_task(wipe_type: str, seed, opts: dict):
         # 2. Update Rust
         if opts.get('update_rust'):
             log('Updating Rust server…', 'step')
+            build_before = _read_appmanifest_buildid()
             await _run_steamcmd_update(log)
+            build_after = _read_appmanifest_buildid()
+            if build_before and build_after:
+                if build_before != build_after:
+                    log(f'Rust build {build_before} -> {build_after}', 'ok')
+                else:
+                    log(f'Rust build unchanged (already on {build_after})', 'info')
 
         # 3. Update Oxide
         if opts.get('update_oxide'):
@@ -5468,11 +5569,19 @@ async def _run_wipe_task(wipe_type: str, seed, opts: dict):
         if seed is None:
             seed = _random.randint(1, 2147483647)
             log(f'Generated random seed: {seed}', 'info')
-        log(f'Applying seed {seed} to service file…', 'step')
+        seed = int(seed)
+        if old_seed is not None and int(old_seed) == seed:
+            log(f'WARNING: new seed ({seed}) matches the previous seed — the map will look identical', 'warn')
+        log(f'Applying seed {seed} to service file… (previous: {old_seed})', 'step')
+        seed_applied = False
         try:
-            await _apply_seed(int(seed), log)
+            seed_applied = await _apply_seed(seed, log)
         except Exception as e:
             log(f'Seed update failed: {e}', 'warn')
+        if seed_applied:
+            log(f'Seed change recorded: {old_seed} -> {seed}', 'ok')
+        else:
+            log(f'Seed may NOT have been applied — service file was not confirmed updated (requested {seed})', 'err')
 
         # 8. Start server
         log('Starting server…', 'step')
@@ -5480,7 +5589,8 @@ async def _run_wipe_task(wipe_type: str, seed, opts: dict):
             log('Server started', 'ok')
 
         _wipe_state['ok'] = True
-        log(('Full' if wipe_type == 'full' else 'Map') + ' Wipe complete!', 'ok')
+        log(('Full' if wipe_type == 'full' else 'Map') + ' Wipe complete! Verifying in the background — see wipe_history.log / journalctl for confirmation.', 'ok')
+        asyncio.get_event_loop().create_task(_verify_wipe_result(wipe_start_ts, seed, img_path))
 
     except Exception as e:
         log(f'Unexpected error: {e}', 'err')
@@ -5515,8 +5625,7 @@ async def _handle_wipe_status(req):
 async def _run_update_task(opts: dict):
     import zipfile, io, shlex
 
-    def log(msg, typ='info'):
-        _wipe_state['log'].append({'msg': msg, 'type': typ})
+    log = _make_task_logger('update')
 
     hdrs = {'User-Agent': f'RconPanel/{_APP_VERSION}'}
     try:
