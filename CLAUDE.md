@@ -235,7 +235,9 @@ PYEOF
 
 Also bump `VERSION="x.y.z"` on line 9 and the comment on line 3 of `install.sh`.
 
-Current version: **v1.20.49** (install.sh, stale — pending blob sync) / **v1.20.52** (app.py) / **v1.0.11** (MapRenderer.cs) / **v1.0.0** (RconPanelItems.cs)
+Current version: **v1.20.53** (install.sh) / **v1.20.53** (app.py) / **v1.0.11** (MapRenderer.cs) / **v1.0.0** (RconPanelItems.cs)
+
+**Panel runs as `steam`, not root** (systemd unit has `User=steam`, `Group=steam`, `AmbientCapabilities=CAP_NET_BIND_SERVICE` to bind :80 unprivileged). `su root` (via `web.sudo_password`, Fernet-encrypted in `config.json` like RCON passwords) is used only for the handful of things that genuinely need root: `systemctl` start/stop/restart of both services, and editing `/etc/systemd/system/rust-server.service` for seed changes.
 
 ## Service Management
 
