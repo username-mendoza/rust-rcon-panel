@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.55'
+_APP_VERSION = '1.20.59'
 
 CONFIG = {}
 
@@ -3076,6 +3076,7 @@ function settingsMsg(msg, type) {
 
 // ── Oxide tab ──────────────────────────────────────────────────────────────
 let oxideData = null, oxideCache = 0, oxideUpdates = {}, oxideSubtab = 'installed';
+let oxideAutoTimer = null, oxideCheckInFlight = false;
 
 function switchOxideSubtab(name) {
   oxideSubtab = name;
@@ -3120,7 +3121,30 @@ async function loadOxideTab(force) {
     oxideData = await r.json();
     oxideCache = now;
     renderOxideTab();
+    // First visit this session — run an immediate silent update check, then keep
+    // polling every 15min so the tab already shows fresh badges next time it's
+    // opened, no "Check Updates" click needed.
+    if (!oxideAutoTimer) {
+      oxideAutoRefresh();
+      oxideAutoTimer = setInterval(oxideAutoRefresh, 15 * 60000);
+    }
   } catch(e) { $('oxide-status-msg').textContent = 'Request failed'; }
+}
+
+async function oxideAutoRefresh() {
+  if (oxideCheckInFlight || !oxideData) return;
+  oxideCheckInFlight = true;
+  try {
+    const r = await fetch('/api/oxide');
+    if (r.ok) { oxideData = await r.json(); oxideCache = Date.now(); }
+    if (oxideData && oxideData.plugins && oxideData.plugins.length) {
+      const slugs = oxideData.plugins.map(p => p.slug || p.name.replace(/\s+/g, '')).filter(Boolean).join(',');
+      const ur = await fetch('/api/oxide/updates?plugins=' + encodeURIComponent(slugs));
+      if (ur.ok) oxideUpdates = await ur.json();
+    }
+    if (activeTab === 'oxide') renderOxideTab();
+  } catch(e) { /* silent background refresh — errors ignored */ }
+  finally { oxideCheckInFlight = false; }
 }
 
 function renderOxideTab() {
@@ -3845,6 +3869,8 @@ async function oxideReloadAll() {
 
 async function oxideCheckUpdates() {
   if (!oxideData || !oxideData.plugins.length) return;
+  if (oxideCheckInFlight) return;
+  oxideCheckInFlight = true;
   const btn = $('oxide-updates-btn');
   btn.disabled = true;
   oxideUpdates = {};
@@ -3863,11 +3889,13 @@ async function oxideCheckUpdates() {
       ? outdated + ' update' + (outdated > 1 ? 's' : '') + ' available'
       : 'All plugins up to date';
   } catch(e) { $('oxide-status-msg').textContent = 'Update check failed'; }
-  finally { btn.disabled = false; }
+  finally { btn.disabled = false; oxideCheckInFlight = false; }
 }
 
 async function oxideUpdate(name, downloadUrl) {
   $('oxide-status-msg').textContent = 'Downloading ' + name + '…';
+  const prev = oxideData && oxideData.plugins.find(p => (p.slug || p.name) === name);
+  const prevVersion = prev ? prev.version : null;
   try {
     const r = await fetch('/api/oxide/update', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -3875,7 +3903,18 @@ async function oxideUpdate(name, downloadUrl) {
     });
     const d = await r.json();
     $('oxide-status-msg').textContent = d.result || (d.ok ? 'Updated!' : (d.error || 'Failed'));
-    if (d.ok) setTimeout(() => loadOxideTab(true), 2000);
+    if (d.ok) {
+      // Plugin was reloaded server-side already, but oxide.plugins can lag a beat
+      // behind the HTTP response — poll until the version actually changes (or we
+      // give up after ~7.5s), then recheck for updates so the badge clears.
+      for (let i = 0; i < 5; i++) {
+        await new Promise(res => setTimeout(res, 1500));
+        await loadOxideTab(true);
+        const p = oxideData.plugins.find(p => (p.slug || p.name) === name);
+        if (!prevVersion || (p && p.version !== prevVersion)) break;
+      }
+      oxideCheckUpdates();
+    }
   } catch(e) { $('oxide-status-msg').textContent = 'Request failed'; }
 }
 
