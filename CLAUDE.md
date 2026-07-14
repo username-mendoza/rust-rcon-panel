@@ -268,7 +268,7 @@ for p in profiles:
 - **Never print base64/binary data to stdout** in bash — it breaks the Claude Code API session.
 - **Never read binary files** (.ico, .png, .jpg, .gif) into context with the Read tool.
 - Favicon lives at `static/favicon.svg` (served by `_handle_favicon` reading from disk).
-- `install.sh` embeds **two** base64 blobs: first is `app.py`, second is `MapRenderer.cs`.
+- `install.sh` embeds **three** base64 blobs, in order: `app.py`, `MapRenderer.cs`, `RconPanelItems.cs`.
 - The static/ directory is NOT currently copied by install.sh — if redeploying, copy manually or add to installer.
 
 ## Known RCON Command Formats

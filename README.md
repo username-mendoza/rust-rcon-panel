@@ -17,13 +17,15 @@ A self-hosted web management panel for Rust dedicated servers. Single-file Pytho
 - **Chat tab** — monitor and send in-game chat
 - **Interactive map** — canvas-based terrain overlay with monument markers, player positions, tier filters, pan & zoom
   - Live world info — seed and world size read live from RCON, rustmaps.com deep-link auto-populated
+  - **Surface / Underground layers** — toggle to the tunnel network map (rendered by the companion Oxide plugin); the toggle appears automatically once an underground map exists
   - **Deep Sea indicator** — badge shows zone open/closed state and countdown timer; portal rings mark all four cardinal entrances on the map edge
 - **Players tab** — online players with ping and right-click action menu (kick, ban, give item, mute, teleport); offline players show full session history and playtime
+  - **Give Item** — item list is pulled live from the server (via the companion `RconPanelItems` plugin) when available, falling back to a bundled ~130-item list otherwise
 - **Ban management** — view ban list, unban players with one click
 - **Oxide tab** — full plugin manager:
   - Lists all plugins — loaded (green) and unloaded/on-disk (grey)
   - Per-plugin Reload, Unload, and Load buttons; Reload All
-  - **Update checker** — queries ServerArmour aggregator for uMod, Codefling, and Chaos plugins
+  - **Update checker** — queries ServerArmour aggregator for uMod, Codefling, and Chaos plugins; rechecks automatically in the background every 15 minutes once the tab has been opened, so badges are already current next time you switch to it
   - **Auto-update** — one-click download and reload for uMod plugins
   - **Manual upload** — upload a `.cs` or `.zip`; ZIP shows integrity check modal before writing anything; config file conflicts prompt keep/overwrite per file
 - **Server tab** — full server management:
@@ -309,22 +311,28 @@ Both services are enabled for autostart on boot.
 
 ```
 /home/steam/rcon-panel/
-  app.py          — backend + embedded frontend (all-in-one)
-  config.json     — web + map config (gitignored — contains hashed password)
-  profiles.json   — RCON server profiles (gitignored — contains encrypted passwords)
-  .secret_key     — Fernet encryption key (gitignored — keep safe)
-  players.json    — player session history (gitignored — runtime data)
-  install.sh      — full-stack installer
-  setup.sh        — panel-only service installer
+  app.py           — backend + embedded frontend (all-in-one)
+  config.json      — web + map config (gitignored — contains hashed password)
+  profiles.json    — RCON server profiles (gitignored — contains encrypted passwords)
+  .secret_key      — Fernet encryption key (gitignored — keep safe)
+  players.json     — player session history (gitignored — runtime data)
+  wipe_history.log — wipe/update task progress log (gitignored — runtime data)
+  install.sh       — full-stack installer
+  setup.sh         — panel-only service installer
   static/
     favicon.svg
 
 /home/steam/rustserver/oxide/plugins/
-  MapRenderer.cs  — Oxide plugin for terrain map rendering
+  MapRenderer.cs     — Oxide plugin for terrain + underground tunnel map rendering
+  RconPanelItems.cs  — Oxide plugin exporting live item definitions for the Give Item dialog
 
 /home/steam/rustserver/oxide/data/MapRenderer/
-  map.png         — rendered terrain image (written by MapRenderer.cs)
-  monuments.json  — monument list with coordinates and tiers (written by MapRenderer.cs)
+  map.png            — rendered surface terrain image
+  underground.png    — rendered underground tunnel network image
+  monuments.json     — monument list with coordinates and tiers
+
+/home/steam/rustserver/oxide/data/RconPanel/
+  items.json         — live item definitions (written by RconPanelItems.cs)
 ```
 
 ---
