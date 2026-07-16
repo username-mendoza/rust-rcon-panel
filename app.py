@@ -6,6 +6,7 @@ import base64
 import datetime
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import platform
@@ -20,13 +21,18 @@ from cryptography.fernet import Fernet
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.59'
+_APP_VERSION = '1.20.61'
 
 CONFIG = {}
 
 # ── Player history database ───────────────────────────────────────────────────
 _player_db: dict = {}   # { steamid: {name, sessions:[{j,l?},...]} }
 _player_db_path: str = ''
+
+# ── GeoIP (player origin country) ─────────────────────────────────────────────
+_geoip_cache: dict = {}   # { ip: {'cc': 'US', 'country': 'United States'} | None }
+_geoip_cache_path: str = ''
+_geoip_inflight: set = set()  # ips currently being looked up
 
 _profiles: list = []
 _profiles_path: str = ''
@@ -111,6 +117,58 @@ def _save_player_db():
                 json.dump(_player_db, f, separators=(',', ':'))
         except Exception:
             pass
+
+def _load_geoip_cache():
+    global _geoip_cache
+    if _geoip_cache_path and os.path.exists(_geoip_cache_path):
+        try:
+            with open(_geoip_cache_path) as f:
+                _geoip_cache = json.load(f)
+        except Exception:
+            _geoip_cache = {}
+
+def _save_geoip_cache():
+    if _geoip_cache_path:
+        try:
+            with open(_geoip_cache_path, 'w') as f:
+                json.dump(_geoip_cache, f, separators=(',', ':'))
+        except Exception:
+            pass
+
+async def _lookup_geoip(sid: str, ip: str):
+    """Resolve ip to a country, cache the result, then attach it to the player record."""
+    if ip in _geoip_inflight:
+        return
+    if ip in _geoip_cache:
+        info = _geoip_cache[ip]
+        if info and sid in _player_db:
+            _player_db[sid]['cc'] = info['cc']
+            _player_db[sid]['country'] = info['country']
+        return
+    try:
+        addr = ipaddress.ip_address(ip)
+        if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local:
+            _geoip_cache[ip] = None
+            return
+    except ValueError:
+        return
+    _geoip_inflight.add(ip)
+    try:
+        url = f'http://ip-api.com/json/{ip}?fields=status,country,countryCode'
+        async with _http_session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            data = await resp.json(content_type=None)
+        if data.get('status') == 'success':
+            info = {'cc': data.get('countryCode', ''), 'country': data.get('country', '')}
+            _geoip_cache[ip] = info
+            if sid in _player_db:
+                _player_db[sid]['cc'] = info['cc']
+                _player_db[sid]['country'] = info['country']
+            await asyncio.to_thread(_save_geoip_cache)
+            await asyncio.to_thread(_save_player_db)
+    except Exception:
+        pass
+    finally:
+        _geoip_inflight.discard(ip)
 
 def _new_session() -> str:
     token = os.urandom(32).hex()
@@ -659,6 +717,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
 .pl-dot.on { background: var(--green); box-shadow: 0 0 5px var(--green); }
 .pl-name { font-weight: bold; }
 .pl-row.online .pl-name { color: var(--green); }
+.pl-online-now { color: var(--green); font-weight: bold; }
 .pl-sid { color: var(--dim); font-size: 11px; font-family: monospace; cursor: pointer; }
 .pl-sid:hover { color: var(--blue); text-decoration: underline; }
 .pl-ping.g { color: var(--green); }
@@ -1240,6 +1299,7 @@ html, body { height: 100%; font-family: 'Consolas','Menlo','Monaco',monospace; b
               <th onclick="plSort('session_count')">Sessions</th>
               <th onclick="plSort('first_seen')">First Seen</th>
               <th onclick="plSort('last_seen')">Last Seen</th>
+              <th onclick="plSort('cc')">Country</th>
               <th>Ping</th>
             </tr>
           </thead>
@@ -2562,6 +2622,11 @@ function fmtDate(ts) {
   return new Date(ts*1000).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'2-digit'});
 }
 
+function ccFlag(cc) {
+  if (!cc || cc.length !== 2) return '';
+  return String.fromCodePoint(...[...cc.toUpperCase()].map(c => 127397 + c.charCodeAt(0)));
+}
+
 function switchPlSubtab(name) {
   plSubtab = name;
   ['online','history','banned'].forEach(t => {
@@ -2641,7 +2706,7 @@ function renderPlayersTable() {
   tbody.innerHTML = '';
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="pl-empty">No players found.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="pl-empty">No players found.</td></tr>';
     return;
   }
 
@@ -2667,7 +2732,8 @@ function renderPlayersTable() {
       '<td>'+fmtDuration(totalSecs)+'</td>' +
       '<td>'+p.session_count+'</td>' +
       '<td>'+fmtDate(p.first_seen)+'</td>' +
-      '<td>'+fmtDate(p.last_seen)+'</td>' +
+      '<td>'+(isOnline ? '<span class="pl-online-now">Online</span>' : fmtDate(p.last_seen))+'</td>' +
+      '<td title="'+esc(p.country||'')+'">'+(p.cc ? ccFlag(p.cc)+' '+esc(p.cc) : '')+'</td>' +
       pingCell;
     if (isOnline) {
       tr.onclick = e => { e.stopPropagation(); showPlayerMenu(e, {id: p.id, name: p.name, ping: (livePlayers[p.id] || {}).ping ?? null}); };
@@ -4215,6 +4281,8 @@ async def _handle_players_api(req):
             'first_seen':    sessions[0]['j']  if sessions else None,
             'last_seen':     (current['j'] if current else sessions[-1].get('l')) if sessions else None,
             'sessions':      sessions[-50:],
+            'cc':            p.get('cc', ''),
+            'country':       p.get('country', ''),
         })
     result.sort(key=lambda x: (not x['online'], -(x['last_seen'] or 0)))
     return web.json_response(result)
@@ -4428,6 +4496,12 @@ async def _sync_online_players():
                         _player_db[sid] = {'name': name, 'sessions': []}
                     else:
                         _player_db[sid]['name'] = name
+                    addr = str(p.get('Address', '') or '')
+                    ip = addr.rsplit(':', 1)[0].strip() if addr else ''
+                    if ip and ip != _player_db[sid].get('ip'):
+                        _player_db[sid]['ip'] = ip
+                        changed = True
+                        asyncio.create_task(_lookup_geoip(sid, ip))
                     open_sessions = [s for s in _player_db[sid]['sessions'] if 'l' not in s]
                     if not open_sessions:
                         _player_db[sid]['sessions'].append({'j': now})
@@ -5936,7 +6010,7 @@ def _build_ssl_ctx(ssl_cfg: dict):
 
 
 def main():
-    global CONFIG, _rcon_q, _player_db_path, _profiles_path, _active_profile_id, _rcon_cfg, _secret_key_path
+    global CONFIG, _rcon_q, _player_db_path, _profiles_path, _active_profile_id, _rcon_cfg, _secret_key_path, _geoip_cache_path
     cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
     if not os.path.exists(cfg_path):
         raise SystemExit(f'Config not found: {cfg_path}')
@@ -5945,6 +6019,9 @@ def main():
 
     _player_db_path = os.path.join(os.path.dirname(cfg_path), 'players.json')
     _load_player_db()
+
+    _geoip_cache_path = os.path.join(os.path.dirname(cfg_path), 'geoip_cache.json')
+    _load_geoip_cache()
 
     _secret_key_path = os.path.join(os.path.dirname(cfg_path), '.secret_key')
     _init_fernet()

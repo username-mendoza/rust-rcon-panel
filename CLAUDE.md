@@ -26,6 +26,7 @@ A self-hosted web RCON panel for a Rust dedicated server. Single Python file (`a
   static/
     favicon.svg   # Skull icon served at /favicon.svg
   players.json    # Auto-created at runtime — player session history DB
+  geoip_cache.json # Auto-created at runtime — ip -> country lookup cache
   .secret_key     # Fernet key (root-owned) for encrypting RCON passwords
 
 /home/steam/rustserver/oxide/plugins/
@@ -85,9 +86,19 @@ Cache invalidated by mtime check on every request.
 ### Player Session Tracking
 
 - `_player_db` dict loaded from `players.json` at startup
-- Format: `{ "steamid": { "name": "...", "sessions": [{"j": ts, "l": ts}, ...] } }`
+- Format: `{ "steamid": { "name": "...", "sessions": [{"j": ts, "l": ts}, ...], "ip": "...", "cc": "US", "country": "United States" } }`
 - `_process_join_leave(msg)` called on every RCON message, regex-parses join/leave events
 - `_handle_players_api` returns sorted list with online status, total playtime, session count, etc.
+
+### GeoIP (player origin country)
+
+- `playerlist` RCON response includes an `Address` field (`"ip:port"`), not documented by Rust but confirmed live — parsed in `_sync_online_players`
+- On new/changed IP, `_lookup_geoip(sid, ip)` fires as a background task (`asyncio.create_task`, non-blocking)
+- Private/loopback/link-local/reserved IPs (LAN testing) are skipped and cached as `None` — never geolocated
+- Public IPs are resolved via `http://ip-api.com/json/<ip>` (free tier, no key, 45 req/min limit, plain HTTP not HTTPS)
+- Results cached forever in `_geoip_cache` (ip → `{cc, country}`), persisted to `geoip_cache.json`, so each IP is looked up once
+- Country code + name land on the player record (`cc`, `country`) and are returned by `/api/players`
+- Frontend: Players tab has a sortable Country column; `ccFlag(cc)` renders a flag emoji client-side from the 2-letter code (no image assets)
 
 ### RCON Polling (silent background)
 
@@ -235,7 +246,7 @@ PYEOF
 
 Also bump `VERSION="x.y.z"` on line 9 and the comment on line 3 of `install.sh`.
 
-Current version: **v1.20.59** (install.sh) / **v1.20.59** (app.py) / **v1.0.11** (MapRenderer.cs) / **v1.0.1** (RconPanelItems.cs)
+Current version: **v1.20.61** (install.sh) / **v1.20.61** (app.py) / **v1.0.11** (MapRenderer.cs) / **v1.0.1** (RconPanelItems.cs)
 
 **Panel runs as `steam`, not root** (systemd unit has `User=steam`, `Group=steam`, `AmbientCapabilities=CAP_NET_BIND_SERVICE` to bind :80 unprivileged). `su root` (via `web.sudo_password`, Fernet-encrypted in `config.json` like RCON passwords) is used only for the handful of things that genuinely need root: `systemctl` start/stop/restart of both services, and editing `/etc/systemd/system/rust-server.service` for seed changes.
 
@@ -278,7 +289,7 @@ for p in profiles:
 | `fps` | `"95 FPS"` — number first, no colon |
 | `status` | Multi-line text, no fps/memory |
 | `serverinfo` | JSON with `Framerate`, `Memory`, `Hostname`, `Players`, etc. |
-| `playerlist` | JSON array with `SteamID`, `Username`, `Ping` |
+| `playerlist` | JSON array with `SteamID`, `Username`/`DisplayName`, `Ping`, `Address` (`"ip:port"`), `ConnectedSeconds`, `Health`, etc. |
 | `location` | Text lines: `steamid "Name" pos(x,y,z) ...` |
 | `inventory.giveto "<display_name>" <item> <amt>` | Give item to player (requires display name, not steamid — `inventory.give <steamid>` silently does nothing) |
 | `maprender.generate` | Re-renders surface + underground maps (resets render flags) |
