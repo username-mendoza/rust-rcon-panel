@@ -27,6 +27,7 @@ A self-hosted web RCON panel for a Rust dedicated server. Single Python file (`a
     favicon.svg   # Skull icon served at /favicon.svg
   players.json    # Auto-created at runtime — player session history DB
   geoip_cache.json # Auto-created at runtime — ip -> country lookup cache
+  chat_log.json   # Auto-created at runtime — persisted in-game chat history (cleared on wipe)
   .secret_key     # Fernet key (root-owned) for encrypting RCON passwords
 
 /home/steam/rustserver/oxide/plugins/
@@ -89,6 +90,14 @@ Cache invalidated by mtime check on every request.
 - Format: `{ "steamid": { "name": "...", "sessions": [{"j": ts, "l": ts}, ...], "ip": "...", "cc": "US", "country": "United States" } }`
 - `_process_join_leave(msg)` called on every RCON message, regex-parses join/leave events
 - `_handle_players_api` returns sorted list with online status, total playtime, session count, etc.
+
+### Chat History
+
+- Previously chat was purely client-side (DOM only) — reset on every browser refresh/login. Now persisted server-side.
+- `_recv()` inspects every RCON message envelope; when `d['Type'] == 'Chat'`, `_parse_chat_msg()` (Python port of the frontend's `parseChat()`) extracts who/class/text and appends to `_chat_log` (ring buffer, `_CHAT_LOG_MAX = 500`), persisted to `chat_log.json`
+- `GET /api/chat` returns the buffer (auth-gated, same as `/api/players`)
+- Frontend calls `loadChatHistory()` once on page load (before `connect()`) to backfill `#chat-log` with `silent=true` (no unread-badge spam), using each message's real timestamp via `ts(epoch)`
+- Cleared on wipe: `_run_wipe_task()` clears `_chat_log` right after save files are deleted (same spot stale map images are cleared) — chat is scoped to a wipe cycle, not kept forever
 
 ### GeoIP (player origin country)
 
@@ -246,7 +255,7 @@ PYEOF
 
 Also bump `VERSION="x.y.z"` on line 9 and the comment on line 3 of `install.sh`.
 
-Current version: **v1.20.61** (install.sh) / **v1.20.61** (app.py) / **v1.0.11** (MapRenderer.cs) / **v1.0.1** (RconPanelItems.cs)
+Current version: **v1.20.62** (install.sh) / **v1.20.62** (app.py) / **v1.0.11** (MapRenderer.cs) / **v1.0.1** (RconPanelItems.cs)
 
 **Panel runs as `steam`, not root** (systemd unit has `User=steam`, `Group=steam`, `AmbientCapabilities=CAP_NET_BIND_SERVICE` to bind :80 unprivileged). `su root` (via `web.sudo_password`, Fernet-encrypted in `config.json` like RCON passwords) is used only for the handful of things that genuinely need root: `systemctl` start/stop/restart of both services, and editing `/etc/systemd/system/rust-server.service` for seed changes.
 

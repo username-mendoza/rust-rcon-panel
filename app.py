@@ -21,7 +21,7 @@ from cryptography.fernet import Fernet
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.61'
+_APP_VERSION = '1.20.62'
 
 CONFIG = {}
 
@@ -33,6 +33,11 @@ _player_db_path: str = ''
 _geoip_cache: dict = {}   # { ip: {'cc': 'US', 'country': 'United States'} | None }
 _geoip_cache_path: str = ''
 _geoip_inflight: set = set()  # ips currently being looked up
+
+# ── Chat history (persists across panel logins, cleared on wipe) ─────────────
+_chat_log: list = []   # [{ts, who, cls, text}, ...]
+_chat_log_path: str = ''
+_CHAT_LOG_MAX = 500
 
 _profiles: list = []
 _profiles_path: str = ''
@@ -169,6 +174,40 @@ async def _lookup_geoip(sid: str, ip: str):
         pass
     finally:
         _geoip_inflight.discard(ip)
+
+def _load_chat_log():
+    global _chat_log
+    if _chat_log_path and os.path.exists(_chat_log_path):
+        try:
+            with open(_chat_log_path) as f:
+                _chat_log = json.load(f)
+        except Exception:
+            _chat_log = []
+
+def _save_chat_log():
+    if _chat_log_path:
+        try:
+            with open(_chat_log_path, 'w') as f:
+                json.dump(_chat_log[-_CHAT_LOG_MAX:], f, separators=(',', ':'))
+        except Exception:
+            pass
+
+def _parse_chat_msg(msg: str):
+    """Mirror the frontend's parseChat() so history matches what's shown live."""
+    try:
+        obj = json.loads(msg)
+        if isinstance(obj, dict) and obj.get('Username') is not None:
+            is_server = str(obj.get('UserId', '')) == '0'
+            chan = ' [Team]' if obj.get('Channel') == 1 else ''
+            who = (obj.get('Username') or '?') + chan
+            return who, ('server' if is_server else 'player'), obj.get('Message', '')
+    except Exception:
+        pass
+    sep = msg.find(' : ')
+    if sep != -1:
+        who = msg[:sep].strip()
+        return who, ('server' if who == 'SERVER' else 'player'), msg[sep + 3:].strip()
+    return '?', 'player', msg
 
 def _new_session() -> str:
     token = os.urandom(32).hex()
@@ -1567,8 +1606,9 @@ function switchTab(name) {
 }
 
 // ── Logging ────────────────────────────────────────────────────────────────
-function ts() {
-  return new Date().toLocaleTimeString('en-US', {hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+function ts(epoch) {
+  const d = epoch ? new Date(epoch*1000) : new Date();
+  return d.toLocaleTimeString('en-US', {hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
@@ -1669,20 +1709,29 @@ cb.onclick = () => send(ci.value);
 // ── Chat ───────────────────────────────────────────────────────────────────
 chatL.addEventListener('scroll', () => { chatAutoScroll = chatL.scrollTop + chatL.clientHeight >= chatL.scrollHeight - 24; });
 
-function addChat(who, cls, text) {
+function addChat(who, cls, text, epoch, silent) {
   const d = document.createElement('div');
   d.className = 'cm';
-  d.innerHTML = '<span class="cm-t">'+ts()+'</span>'
+  d.innerHTML = '<span class="cm-t">'+ts(epoch)+'</span>'
     +'<span class="cm-who '+cls+'">'+esc(who)+'</span>'
     +'<span class="cm-sep">:</span>'
     +'<span class="cm-text">'+esc(text)+'</span>';
   chatL.appendChild(d);
   if (chatAutoScroll) chatL.scrollTop = chatL.scrollHeight;
-  if (activeTab !== 'chat') {
+  if (!silent && activeTab !== 'chat') {
     chatUnread++;
     const b = $('chat-badge');
     b.textContent = chatUnread; b.className = 'tbadge show';
   }
+}
+
+async function loadChatHistory() {
+  try {
+    const r = await fetch('/api/chat');
+    if (!r.ok) return;
+    const hist = await r.json();
+    for (const m of hist) addChat(m.who, m.cls, m.text, m.ts, true);
+  } catch (e) {}
 }
 
 function parseChat(msg) {
@@ -4003,6 +4052,7 @@ function connect() {
 }
 
 setInterval(() => { if (rconOk) { sendBg('playerlist'); sendBg('serverinfo'); sendBg('status'); sendBg('env.time'); sendBg('location'); } }, 60000);
+loadChatHistory();
 connect();
 { const t = localStorage.getItem('rcon_active_tab'); switchTab(TABS.includes(t) ? t : 'console'); }
 </script>
@@ -4190,6 +4240,11 @@ async def _recv(ws):
                     continue
                 await _broadcast({'type': 'rcon', 'data': d})
                 txt = d.get('Message', '')
+                if txt and d.get('Type') == 'Chat':
+                    who, cls, text = _parse_chat_msg(txt.strip())
+                    _chat_log.append({'ts': int(time.time()), 'who': who, 'cls': cls, 'text': text})
+                    del _chat_log[:-_CHAT_LOG_MAX]
+                    asyncio.create_task(asyncio.to_thread(_save_chat_log))
                 if txt and _process_join_leave(txt):
                     asyncio.create_task(asyncio.to_thread(_save_player_db))
             except Exception:
@@ -4286,6 +4341,10 @@ async def _handle_players_api(req):
         })
     result.sort(key=lambda x: (not x['online'], -(x['last_seen'] or 0)))
     return web.json_response(result)
+
+
+async def _handle_chat_api(req):
+    return web.json_response(_chat_log[-_CHAT_LOG_MAX:])
 
 
 async def _handle_index(req):
@@ -5723,6 +5782,10 @@ async def _run_wipe_task(wipe_type: str, seed, opts: dict):
         _mapimg_underground_cache = None
         _mapimg_underground_mtime = 0.0
 
+        # Chat history is scoped to a wipe cycle — clear it now that the old save is gone
+        _chat_log.clear()
+        await asyncio.to_thread(_save_chat_log)
+
         # 6. Clear backpacks
         log('Clearing Backpacks mod data…', 'step')
         try:
@@ -6010,7 +6073,7 @@ def _build_ssl_ctx(ssl_cfg: dict):
 
 
 def main():
-    global CONFIG, _rcon_q, _player_db_path, _profiles_path, _active_profile_id, _rcon_cfg, _secret_key_path, _geoip_cache_path
+    global CONFIG, _rcon_q, _player_db_path, _profiles_path, _active_profile_id, _rcon_cfg, _secret_key_path, _geoip_cache_path, _chat_log_path
     cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
     if not os.path.exists(cfg_path):
         raise SystemExit(f'Config not found: {cfg_path}')
@@ -6022,6 +6085,9 @@ def main():
 
     _geoip_cache_path = os.path.join(os.path.dirname(cfg_path), 'geoip_cache.json')
     _load_geoip_cache()
+
+    _chat_log_path = os.path.join(os.path.dirname(cfg_path), 'chat_log.json')
+    _load_chat_log()
 
     _secret_key_path = os.path.join(os.path.dirname(cfg_path), '.secret_key')
     _init_fernet()
@@ -6079,6 +6145,7 @@ def main():
     app.router.add_get('/api/items',              _handle_items)
     app.router.add_get('/monuments',              _handle_monuments_public)
     app.router.add_get('/api/players',            _handle_players_api)
+    app.router.add_get('/api/chat',                _handle_chat_api)
     app.router.add_get('/mapimg',                 _handle_mapimg)
     app.router.add_get('/mapimg/underground',     _handle_mapimg_underground)
     app.router.add_get('/api/mapimg/refresh',     _handle_mapimg_refresh)

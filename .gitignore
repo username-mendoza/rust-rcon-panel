@@ -4,6 +4,7 @@ config.json
 profiles.json
 players.json
 geoip_cache.json
+chat_log.json
 wipe_history.log
 
 # Python cache
