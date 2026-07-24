@@ -91,6 +91,29 @@ Cache invalidated by mtime check on every request.
 - `_process_join_leave(msg)` called on every RCON message, regex-parses join/leave events
 - `_handle_players_api` returns sorted list with online status, total playtime, session count, etc.
 
+### Stale Map After Wipe (fixed v1.20.63)
+
+The Map tab never automatically reloaded `/mapimg` after the first load (`loadMapImg()` was
+only called once per tab-open, on layer toggle, or on load error). Since a wiped `map.png` is
+deleted then re-rendered by MapRenderer — observed taking **up to ~18 minutes** in practice,
+well past the plugin's nominal 30s/40s scheduling delays — the panel kept showing the pre-wipe
+map (and stale player dots on top of it) for the entire gap, with no user-visible signal that a
+new map was even coming.
+
+Fix: `GET /api/mapimg/meta` returns `{surface_mtime, underground_mtime}` from `os.path.getmtime`.
+`captureWipeMapBaseline()` snapshots this right when a wipe is kicked off (`startWipe()`). Once
+`pollWipeStatus()` sees `d.done && d.ok` for a wipe (guarded by `_wipeMapBaseline` being set, so
+plain server *updates* don't trigger this), `beginPostWipeMapWatch()`:
+- Immediately nulls `mapImg` and clears `mapPlayers` so the canvas falls back to the existing
+  "Waiting for MapRenderer to generate the map…" placeholder instead of showing the stale image
+- Polls `/api/mapimg/meta` every 20s (~30 min ceiling) until `surface_mtime` advances past the
+  baseline, then reloads the map image, re-checks underground availability, and re-fetches
+  `/api/monuments` (monument positions regenerate with the new map)
+
+Player position dots need no separate fix — `mapPlayers` is repopulated continuously from live
+`location` RCON polling once cleared; the stale entries were only a symptom of the stale map
+image being drawn underneath them.
+
 ### Chat History
 
 - Previously chat was purely client-side (DOM only) — reset on every browser refresh/login. Now persisted server-side.
@@ -255,7 +278,7 @@ PYEOF
 
 Also bump `VERSION="x.y.z"` on line 9 and the comment on line 3 of `install.sh`.
 
-Current version: **v1.20.62** (install.sh) / **v1.20.62** (app.py) / **v1.0.11** (MapRenderer.cs) / **v1.0.1** (RconPanelItems.cs)
+Current version: **v1.20.63** (install.sh) / **v1.20.63** (app.py) / **v1.0.11** (MapRenderer.cs) / **v1.0.1** (RconPanelItems.cs)
 
 **Panel runs as `steam`, not root** (systemd unit has `User=steam`, `Group=steam`, `AmbientCapabilities=CAP_NET_BIND_SERVICE` to bind :80 unprivileged). `su root` (via `web.sudo_password`, Fernet-encrypted in `config.json` like RCON passwords) is used only for the handful of things that genuinely need root: `systemctl` start/stop/restart of both services, and editing `/etc/systemd/system/rust-server.service` for seed changes.
 

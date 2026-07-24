@@ -21,7 +21,7 @@ from cryptography.fernet import Fernet
 from aiohttp import web, WSMsgType
 import aiohttp
 
-_APP_VERSION = '1.20.62'
+_APP_VERSION = '1.20.63'
 
 CONFIG = {}
 
@@ -2246,6 +2246,49 @@ function loadMapImg() {
   img.src = url;
 }
 
+// After a wipe, the old map.png/underground.png stay on disk (still loadable, just wrong)
+// until MapRenderer re-renders them — which can take many minutes. Track mtimes across the
+// wipe so the panel knows to keep showing "regenerating…" instead of the stale pre-wipe map.
+let _wipeMapBaseline = null;
+let _postWipeMapPollTimer = null;
+
+async function captureWipeMapBaseline() {
+  try {
+    const r = await fetch('/api/mapimg/meta');
+    _wipeMapBaseline = r.ok ? await r.json() : null;
+  } catch (e) { _wipeMapBaseline = null; }
+}
+
+function beginPostWipeMapWatch() {
+  clearInterval(_postWipeMapPollTimer);
+  mapImg = null;
+  mapPlayers = {};
+  drawMap();
+  if (!_wipeMapBaseline) { loadMapImg(); return; }  // no baseline captured — fall back to a single reload
+  let attempts = 0;
+  _postWipeMapPollTimer = setInterval(async () => {
+    attempts++;
+    try {
+      const r = await fetch('/api/mapimg/meta');
+      const m = r.ok ? await r.json() : null;
+      if (m && m.surface_mtime > _wipeMapBaseline.surface_mtime) {
+        clearInterval(_postWipeMapPollTimer);
+        _wipeMapBaseline = null;
+        mapImgRetries = 0;
+        loadMapImg();
+        _undergndCheckRetries = 0;
+        checkUndergroundAvailable();
+        fetch('/api/monuments').then(r2 => r2.json()).then(data => {
+          mapMonuments = data || [];
+          updateMapInfoBar();
+          drawMap();
+        }).catch(() => {});
+      }
+    } catch (e) { /* transient — keep polling */ }
+    if (attempts >= 90) clearInterval(_postWipeMapPollTimer);  // ~30 min ceiling
+  }, 20000);
+}
+
 function initMapIfNeeded() {
   if (!mapNeedsInit) return;
   mapNeedsInit = false;
@@ -3910,6 +3953,7 @@ async function startWipe(wipeType) {
   if (_wipeOverlay) _wipeOverlay.onclick = null;
   _addWipeCopyBtn();
   appendWipeLine({msg: 'Starting ' + (wipeType === 'full' ? 'Full' : 'Map') + ' Wipe…', type: 'step'});
+  captureWipeMapBaseline();
   try {
     await fetch('/api/server/wipe', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -3938,9 +3982,11 @@ async function pollWipeStatus() {
           doBtn.disabled = false;
           doBtn.textContent = 'Finished';
           doBtn.onclick = closeWipeModal;
+          if (_wipeMapBaseline) beginPostWipeMapWatch();
         } else {
           doBtn.disabled = true;
           doBtn.textContent = 'Failed';
+          _wipeMapBaseline = null;
         }
       }
       $('wipe-cancel').textContent = 'Close';
@@ -4437,6 +4483,18 @@ async def _handle_mapimg(req):
     if _mapimg_cache:
         return web.Response(body=_mapimg_cache, content_type=_mapimg_cache_ct)
     return web.Response(status=404)
+
+
+async def _handle_mapimg_meta(req):
+    path = CONFIG.get('map', {}).get('image_path', '')
+    surface_mtime = 0.0
+    underground_mtime = 0.0
+    if path and os.path.exists(path):
+        surface_mtime = os.path.getmtime(path)
+        upath = str(Path(path).parent / 'underground.png')
+        if os.path.exists(upath):
+            underground_mtime = os.path.getmtime(upath)
+    return web.json_response({'surface_mtime': surface_mtime, 'underground_mtime': underground_mtime})
 
 
 async def _handle_mapimg_underground(req):
@@ -6148,6 +6206,7 @@ def main():
     app.router.add_get('/api/chat',                _handle_chat_api)
     app.router.add_get('/mapimg',                 _handle_mapimg)
     app.router.add_get('/mapimg/underground',     _handle_mapimg_underground)
+    app.router.add_get('/api/mapimg/meta',        _handle_mapimg_meta)
     app.router.add_get('/api/mapimg/refresh',     _handle_mapimg_refresh)
     app.router.add_get('/api/profiles',           _handle_profiles_get)
     app.router.add_post('/api/profiles',          _handle_profiles_post)
