@@ -14,12 +14,13 @@ A self-hosted web management panel for Rust dedicated servers. Single-file Pytho
 ## Features
 
 - **RCON console** — send commands, see live server output
-- **Chat tab** — monitor and send in-game chat
+- **Chat tab** — monitor and send in-game chat; history persists server-side across logins/reconnects (last 500 messages), automatically cleared on wipe
 - **Interactive map** — canvas-based terrain overlay with monument markers, player positions, tier filters, pan & zoom
   - Live world info — seed and world size read live from RCON, rustmaps.com deep-link auto-populated
   - **Surface / Underground layers** — toggle to the tunnel network map (rendered by the companion Oxide plugin); the toggle appears automatically once an underground map exists
   - **Deep Sea indicator** — badge shows zone open/closed state and countdown timer; portal rings mark all four cardinal entrances on the map edge
-- **Players tab** — online players with ping and right-click action menu (kick, ban, give item, mute, teleport); offline players show full session history and playtime
+  - **Auto-refresh after wipe** — the panel detects when MapRenderer has actually finished re-rendering (can take many minutes) and swaps in the new map automatically, instead of showing the wiped-away world's stale image
+- **Players tab** — online players with ping, origin country (flag + code, resolved via ip-api.com and cached per-IP so each address is only looked up once), and right-click action menu (kick, ban, give item, mute, teleport); offline players show full session history and playtime
   - **Give Item** — item list is pulled live from the server (via the companion `RconPanelItems` plugin) when available, falling back to a bundled ~130-item list otherwise
 - **Ban management** — view ban list, unban players with one click
 - **Oxide tab** — full plugin manager:
@@ -245,6 +246,8 @@ To re-render manually via RCON console:
 maprender.generate
 ```
 
+After a Map or Full wipe, the panel polls in the background and swaps in the freshly-rendered map/monuments automatically once MapRenderer finishes — no manual refresh needed, even if regeneration takes several minutes.
+
 ### Deep Sea
 
 When the Naval Update Deep Sea zone is supported by the server, the Map tab shows:
@@ -316,6 +319,8 @@ Both services are enabled for autostart on boot.
   profiles.json    — RCON server profiles (gitignored — contains encrypted passwords)
   .secret_key      — Fernet encryption key (gitignored — keep safe)
   players.json     — player session history (gitignored — runtime data)
+  geoip_cache.json — ip -> country lookup cache (gitignored — runtime data)
+  chat_log.json    — persisted in-game chat history, cleared on wipe (gitignored — runtime data)
   wipe_history.log — wipe/update task progress log (gitignored — runtime data)
   install.sh       — full-stack installer
   setup.sh         — panel-only service installer
